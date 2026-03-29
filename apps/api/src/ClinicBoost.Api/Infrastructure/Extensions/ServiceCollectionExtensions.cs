@@ -9,6 +9,7 @@ using ClinicBoost.Api.Infrastructure.Idempotency;
 using ClinicBoost.Api.Infrastructure.Middleware;
 using ClinicBoost.Api.Infrastructure.Twilio;
 using ClinicBoost.Api.Features.Webhooks.Voice.MissedCall;
+using ClinicBoost.Api.Features.Webhooks.WhatsApp.Inbound;
 using System.Text;
 
 namespace ClinicBoost.Api.Infrastructure.Extensions;
@@ -240,6 +241,22 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
+    // WhatsApp inbound: Cola + Worker + ConversationService
+    public static IServiceCollection AddWhatsAppInboundFeature(
+        this IServiceCollection services)
+    {
+        // Singleton: el Channel debe sobrevivir al ciclo de vida del request
+        services.AddSingleton<IWhatsAppJobQueue, ChannelWhatsAppJobQueue>();
+
+        // Background service: consume la cola y ejecuta el pipeline WhatsApp
+        services.AddHostedService<WhatsAppInboundWorker>();
+
+        // Scoped: gestiona upsert de Conversation y append de Message
+        services.AddScoped<IConversationService, ConversationService>();
+
+        return services;
+    }
+
     // Feature services aggregator
     public static IServiceCollection AddFeatureServices(
         this IServiceCollection services,
@@ -248,6 +265,7 @@ public static class ServiceCollectionExtensions
         services.AddIdempotencyService();
         services.AddTwilioServices(config);
         services.AddMissedCallFeature();
+        services.AddWhatsAppInboundFeature();
         return services;
     }
 }
@@ -267,6 +285,7 @@ public static class EndpointRouteBuilderExtensions
         this IEndpointRouteBuilder app)
     {
         app.MapMissedCallEndpoints();
+        app.MapWhatsAppInboundEndpoints();
         return app;
     }
 }
