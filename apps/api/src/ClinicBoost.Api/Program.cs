@@ -37,7 +37,7 @@ try
     builder.Services.AddOpenApi();
 
     // ─── Features (Vertical Slice) ───────────────────────────────────────────
-    builder.Services.AddFeatureServices();
+    builder.Services.AddFeatureServices(builder.Configuration);
 
     var app = builder.Build();
 

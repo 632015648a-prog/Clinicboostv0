@@ -1,18 +1,21 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.Extensions.Http.Resilience;
 using ClinicBoost.Api.Infrastructure.Database;
 using ClinicBoost.Api.Infrastructure.Idempotency;
 using ClinicBoost.Api.Infrastructure.Middleware;
+using ClinicBoost.Api.Infrastructure.Twilio;
+using ClinicBoost.Api.Features.Webhooks.Voice.MissedCall;
 using System.Text;
 
 namespace ClinicBoost.Api.Infrastructure.Extensions;
 
 public static class ServiceCollectionExtensions
 {
-    // ─── Base de datos + TenantContext ────────────────────────────────────────
+    // Base de datos + TenantContext
     public static IServiceCollection AddClinicBoostDatabase(
         this IServiceCollection services,
         IConfiguration config)
@@ -47,7 +50,7 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
-    // ─── Auth JWT (Supabase GoTrue) + cookies httpOnly ────────────────────────
+    // Auth JWT (Supabase GoTrue) + cookies httpOnly
     public static IServiceCollection AddClinicBoostAuth(
         this IServiceCollection services,
         IConfiguration config)
@@ -66,19 +69,14 @@ public static class ServiceCollectionExtensions
                     ValidateIssuerSigningKey = true,
                     IssuerSigningKey         = new SymmetricSecurityKey(
                                                    Encoding.UTF8.GetBytes(jwtSecret)),
-                    ValidateIssuer           = false,  // Supabase no fija issuer en dev
+                    ValidateIssuer           = false,
                     ValidateAudience         = true,
                     ValidAudience            = "authenticated",
                     ClockSkew                = TimeSpan.FromSeconds(30),
-                    // Validar que el token no está expirado de forma explícita
                     ValidateLifetime         = true,
                     RequireExpirationTime    = true,
                 };
 
-                // ── Leer token de cookie httpOnly ───────────────────────────
-                // Cookie tiene prioridad sobre el header Authorization para
-                // peticiones del frontend. Las peticiones server-to-server
-                // pueden usar el header Bearer normalmente.
                 opts.Events = new JwtBearerEvents
                 {
                     OnMessageReceived = ctx =>
@@ -93,7 +91,6 @@ public static class ServiceCollectionExtensions
 
                     OnAuthenticationFailed = ctx =>
                     {
-                        // Log estructurado; no exponer detalles del error al cliente
                         var logger = ctx.HttpContext.RequestServices
                             .GetRequiredService<ILogger<JwtBearerEvents>>();
                         logger.LogWarning(
@@ -101,24 +98,19 @@ public static class ServiceCollectionExtensions
                             "Path={Path} Error={ErrorType}",
                             ctx.HttpContext.Request.Path,
                             ctx.Exception?.GetType().Name ?? "unknown");
-
                         return Task.CompletedTask;
                     }
                 };
 
-                // No revelar detalles de validación JWT al cliente
                 opts.IncludeErrorDetails = false;
             });
 
         services.AddAuthorization(opts =>
         {
-            // Política por defecto: require authenticated
             opts.DefaultPolicy = new AuthorizationPolicyBuilder()
                 .RequireAuthenticatedUser()
                 .Build();
 
-            // Política "RequireTenant": require authenticated + tenant_id en claims
-            // Usada como fallback en endpoints que no usan [RequireRole]
             opts.AddPolicy("RequireTenant", p =>
                 p.RequireAuthenticatedUser()
                  .RequireClaim("tenant_id"));
@@ -127,7 +119,7 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
-    // ─── CORS ─────────────────────────────────────────────────────────────────
+    // CORS
     public static IServiceCollection AddClinicBoostCors(
         this IServiceCollection services,
         IConfiguration config)
@@ -140,13 +132,13 @@ public static class ServiceCollectionExtensions
                 p.WithOrigins(origins)
                  .AllowAnyMethod()
                  .AllowAnyHeader()
-                 .AllowCredentials()       // Requerido para cookies httpOnly
+                 .AllowCredentials()
                  .SetPreflightMaxAge(TimeSpan.FromMinutes(10))));
 
         return services;
     }
 
-    // ─── Health Checks ────────────────────────────────────────────────────────
+    // Health Checks
     public static IServiceCollection AddClinicBoostHealthChecks(
         this IServiceCollection services,
         IConfiguration config)
@@ -160,7 +152,7 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
-    // ─── Resiliencia para HttpClients externos ────────────────────────────────
+    // Resiliencia para HttpClients externos
     public static IServiceCollection AddClinicBoostResilience(
         this IServiceCollection services)
     {
@@ -180,7 +172,7 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
-    // ─── HttpClient para AI (OpenAI / Anthropic Claude) ──────────────────────
+    // HttpClient para AI (OpenAI / Anthropic Claude)
     public static IServiceCollection AddAiResilience(
         this IServiceCollection services)
     {
@@ -200,30 +192,67 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
-    // ─── Idempotencia transversal ─────────────────────────────────────────────
+    // Idempotencia transversal
     public static IServiceCollection AddIdempotencyService(
         this IServiceCollection services)
     {
-        // Scoped: una instancia por request HTTP o por scope de job.
-        // Depende de AppDbContext (Scoped) e ITenantContext (Scoped).
         services.AddScoped<IIdempotencyService, IdempotencyService>();
         return services;
     }
 
-    // ─── Feature services aggregator ─────────────────────────────────────────
-    public static IServiceCollection AddFeatureServices(
+    // Twilio: validador de firma + resolución de tenant por teléfono
+    public static IServiceCollection AddTwilioServices(
+        this IServiceCollection services,
+        IConfiguration          config)
+    {
+        services
+            .AddOptions<TwilioOptions>()
+            .Bind(config.GetSection(TwilioOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
+        // IMemoryCache necesario para TenantPhoneResolver
+        services.AddMemoryCache();
+
+        // Singleton: valida firmas con HMAC-SHA1; sin estado mutable
+        services.AddSingleton<ITwilioSignatureValidator>(sp =>
+        {
+            var opts = sp.GetRequiredService<IOptions<TwilioOptions>>().Value;
+            return new TwilioSignatureValidator(opts.AuthToken);
+        });
+
+        // Singleton: resuelve tenant por numero E.164 con cache en memoria
+        services.AddSingleton<ITenantPhoneResolver, TenantPhoneResolver>();
+
+        return services;
+    }
+
+    // flow_00: Cola + Worker de llamada perdida
+    public static IServiceCollection AddMissedCallFeature(
         this IServiceCollection services)
     {
-        // Registrar idempotencia (transversal a todos los features)
-        services.AddIdempotencyService();
+        // Singleton: el Channel debe sobrevivir al ciclo de vida del request
+        services.AddSingleton<IMissedCallJobQueue, ChannelMissedCallJobQueue>();
 
-        // Cada feature registra sus propios servicios aquí conforme crece.
-        // Ejemplo:  services.AddScoped<MissedCallService>();
+        // Background service: consume la cola y ejecuta flow_00
+        services.AddHostedService<MissedCallWorker>();
+
+        return services;
+    }
+
+    // Feature services aggregator
+    public static IServiceCollection AddFeatureServices(
+        this IServiceCollection services,
+        IConfiguration          config)
+    {
+        services.AddIdempotencyService();
+        services.AddTwilioServices(config);
+        services.AddMissedCallFeature();
         return services;
     }
 }
 
-// ─── Extensions para pipeline HTTP ───────────────────────────────────────────
+// Extensions para pipeline HTTP
 
 public static class ApplicationBuilderExtensions
 {
@@ -237,8 +266,7 @@ public static class EndpointRouteBuilderExtensions
     public static IEndpointRouteBuilder MapFeatureEndpoints(
         this IEndpointRouteBuilder app)
     {
-        // Cada feature mapea sus propios endpoints vía extension methods.
-        // Ejemplo:  app.MapAppointmentsEndpoints();
+        app.MapMissedCallEndpoints();
         return app;
     }
 }

@@ -1,10 +1,8 @@
 using ClinicBoost.Api.Infrastructure.Database;
 using ClinicBoost.Api.Infrastructure.Idempotency;
 using ClinicBoost.Api.Infrastructure.Tenants;
-using ClinicBoost.Domain.Common;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 
@@ -17,70 +15,20 @@ namespace ClinicBoost.Tests.Infrastructure.Idempotency;
 // Nota sobre InMemory vs Sqlite:
 //   · InMemory no soporta SQL crudo (ExecuteSqlAsync) → el método
 //     InsertIgnoringConflictAsync falla con NotSupportedException.
-//   · Para tests con InMemory usamos un subclase testeable que permite
-//     inyectar la lógica de inserción real vía delegado.
+//   · Para tests con InMemory usamos TestableIdempotencyService (en
+//     TestableIdempotencyService.cs) que sustituye AtomicInsertAsync
+//     con lógica EF pura, compatible con InMemory.
 //   · En CI con Postgres real se pueden añadir tests de integración
 //     completos en ClinicBoost.IntegrationTests (proyecto separado).
 //
 // ESTRATEGIA DE TEST AQUÍ:
 //   1. Tests unitarios puros del IdempotencyResult → IdempotencyResultTests.cs
 //   2. Tests del helper ComputeHash → IdempotencyServiceHashTests.cs
-//   3. Tests del flujo completo con FakeIdempotencyService (doble de test) →
+//   3. Tests del flujo completo con TestableIdempotencyService (doble de test) →
 //      simula los tres escenarios (nuevo, duplicado, mismatch) con EF InMemory.
 //
 // De esta forma tenemos cobertura de la lógica sin depender de Postgres en CI.
 // ════════════════════════════════════════════════════════════════════════════
-
-/// <summary>
-/// Test double de IdempotencyService que reemplaza InsertIgnoringConflictAsync
-/// con una implementación basada en EF Core InMemory (SELECT+INSERT no atómico,
-/// suficiente para tests unitarios).
-/// </summary>
-internal sealed class TestableIdempotencyService : IdempotencyService
-{
-    private readonly AppDbContext _dbCtx;
-
-    public TestableIdempotencyService(
-        AppDbContext                db,
-        ITenantContext              tenant,
-        ILogger<IdempotencyService> logger)
-        : base(db, tenant, logger)
-    {
-        _dbCtx = db;
-    }
-
-    /// <summary>
-    /// Sobrescribe el INSERT SQL con una versión EF pura (SELECT + conditional INSERT).
-    /// No es atómico, pero es suficiente para tests unitarios sin Postgres.
-    ///
-    /// NOTA: EF InMemory tiene limitaciones con Guid? nullable en comparaciones LINQ.
-    /// Usamos .ToList() + LINQ to Objects para garantizar semántica correcta de null.
-    /// </summary>
-    protected override async Task<(bool inserted, ProcessedEvent? existing)>
-        AtomicInsertAsync(
-            ProcessedEvent    evt,
-            CancellationToken ct)
-    {
-        // Cargar candidatos por (event_type, event_id) — sin filtrar por tenant_id
-        // para evitar problemas de semántica nullable en EF InMemory.
-        var candidates = await _dbCtx.ProcessedEvents
-            .AsNoTracking()
-            .Where(e => e.EventType == evt.EventType && e.EventId == evt.EventId)
-            .ToListAsync(ct);
-
-        // Filtrar por tenant_id con semántica null correcta en LINQ to Objects
-        var existing = candidates.FirstOrDefault(e =>
-            e.TenantId.Equals(evt.TenantId) ||
-            (!e.TenantId.HasValue && !evt.TenantId.HasValue));
-
-        if (existing is not null)
-            return (false, existing);
-
-        _dbCtx.ProcessedEvents.Add(evt);
-        await _dbCtx.SaveChangesAsync(ct);
-        return (true, null);
-    }
-}
 
 public sealed class IdempotencyServiceTests : IDisposable
 {
