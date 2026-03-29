@@ -29,6 +29,7 @@ try
     builder.Services.AddClinicBoostCors(builder.Configuration);
     builder.Services.AddClinicBoostHealthChecks(builder.Configuration);
     builder.Services.AddClinicBoostResilience();
+    builder.Services.AddAiResilience();
 
     // ─── OpenAPI / Scalar ────────────────────────────────────────────────────
     builder.Services.AddOpenApi();
@@ -44,8 +45,11 @@ try
     {
         opts.EnrichDiagnosticContext = (diagCtx, httpCtx) =>
         {
-            diagCtx.Set("TenantId", httpCtx.Items["TenantId"] ?? "unknown");
-            diagCtx.Set("UserId", httpCtx.User.FindFirst("sub")?.Value ?? "anon");
+            // Leer TenantId desde ITenantContext (Scoped) si está disponible
+            var tenantCtx = httpCtx.RequestServices
+                .GetService<ClinicBoost.Api.Infrastructure.Middleware.ITenantContext>();
+            diagCtx.Set("TenantId", tenantCtx?.TenantId?.ToString() ?? "unknown");
+            diagCtx.Set("UserId",   httpCtx.User.FindFirst("sub")?.Value ?? "anon");
         };
     });
 
@@ -64,7 +68,9 @@ try
     app.UseAuthorization();
 
     // ─── Tenant middleware ────────────────────────────────────────────────────
-    app.UseMiddleware<TenantMiddleware>();
+    // Popula ITenantContext (Scoped) con tenant_id, user_role y user_id del JWT.
+    // TenantDbContextInterceptor lo consume al inicio de cada transacción EF Core.
+    app.UseTenantMiddleware();
 
     // ─── Map endpoints (Vertical Slice) ──────────────────────────────────────
     app.MapHealthEndpoints();

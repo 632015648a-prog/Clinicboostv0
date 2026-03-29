@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.Extensions.Http.Resilience;
 using ClinicBoost.Api.Infrastructure.Database;
+using ClinicBoost.Api.Infrastructure.Middleware;
 using EFCore.NamingConventions;
 using System.Text;
 
@@ -20,7 +21,17 @@ public static class ServiceCollectionExtensions
                 "Connection string 'Supabase' no encontrada. " +
                 "Revisa appsettings o variables de entorno.");
 
-        services.AddDbContext<AppDbContext>(opts =>
+        // Registrar TenantContext como Scoped (un contexto por request HTTP)
+        services.AddTenantContext();
+
+        // Registrar el interceptor que llama a claim_tenant_context() en cada transacción
+        services.AddScoped<TenantDbContextInterceptor>();
+
+        services.AddDbContext<AppDbContext>((sp, opts) =>
+        {
+            // El interceptor es Scoped; AddDbContext con factory (sp) lo resuelve correctamente
+            var interceptor = sp.GetRequiredService<TenantDbContextInterceptor>();
+
             opts.UseNpgsql(connStr, npgsql =>
             {
                 npgsql.EnableRetryOnFailure(
@@ -29,7 +40,9 @@ public static class ServiceCollectionExtensions
                     errorCodesToAdd: null);
                 npgsql.CommandTimeout(30);
             })
-            .UseSnakeCaseNamingConvention());
+            .UseSnakeCaseNamingConvention()
+            .AddInterceptors(interceptor);
+        });
 
         return services;
     }
@@ -132,6 +145,26 @@ public static class ServiceCollectionExtensions
     {
         // Cada feature puede registrar sus servicios aquí conforme crece
         // Ejemplo:  services.AddScoped<AppointmentService>();
+        return services;
+    }
+
+    // ─── HttpClient para AI (OpenAI/Claude) ───────────────────────────────────
+    public static IServiceCollection AddAiResilience(
+        this IServiceCollection services)
+    {
+        services.AddHttpClient("OpenAI", c =>
+            {
+                c.BaseAddress = new Uri("https://api.openai.com/");
+                c.Timeout = TimeSpan.FromSeconds(60); // AI puede tardar más
+            })
+            .AddStandardResilienceHandler(opts =>
+            {
+                opts.Retry.MaxRetryAttempts = 2;           // AI: menos reintentos (coste)
+                opts.Retry.Delay = TimeSpan.FromSeconds(3);
+                opts.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(60);
+                opts.CircuitBreaker.BreakDuration     = TimeSpan.FromSeconds(60);
+            });
+
         return services;
     }
 }
