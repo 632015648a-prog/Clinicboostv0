@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ClinicBoost.Api/ClinicBoost.Api.csproj" />
+    <Project Path="src/ClinicBoost.Domain/ClinicBoost.Domain.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ClinicBoost.Tests/ClinicBoost.Tests.csproj" />
+  </Folder>
+</Solution>

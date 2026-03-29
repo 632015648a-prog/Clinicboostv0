@@ -1,0 +1,42 @@
+# ─── .NET ─────────────────────────────────────────────────────────────────────
+**/bin/
+**/obj/
+**/*.user
+**/.vs/
+**/*.suo
+**/TestResults/
+**/coverage/
+*.nupkg
+*.snupkg
+.idea/
+
+# Secrets — NUNCA en git
+**/appsettings.Development.Local.json
+**/appsettings.*.Local.json
+**/.env
+**/.env.local
+**/.env.*.local
+**/*.pfx
+**/*.p12
+
+# ─── Node / Frontend ─────────────────────────────────────────────────────────
+**/node_modules/
+**/dist/
+**/.vite/
+**/coverage/
+**/*.local
+
+# ─── Supabase ────────────────────────────────────────────────────────────────
+supabase/.branches/
+supabase/.temp/
+.supabase/
+
+# ─── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
