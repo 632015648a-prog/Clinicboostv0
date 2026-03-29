@@ -1,6 +1,6 @@
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore.Diagnostics;
-using ClinicBoost.Api.Infrastructure.Middleware;
+using ClinicBoost.Api.Infrastructure.Tenants;
 
 namespace ClinicBoost.Api.Infrastructure.Database;
 
@@ -9,145 +9,157 @@ namespace ClinicBoost.Api.Infrastructure.Database;
 //
 // PROPÓSITO
 // ─────────
-// Cuando ClinicBoost.Api usa la conexión directa con app_user
-// (sin JWT de GoTrue), Postgres no tiene el contexto de tenant.
+// Propaga el contexto de tenant (tenant_id, user_role, user_id)
+// a Postgres mediante la función claim_tenant_context() al abrir
+// cada conexión EF Core.
 //
-// Este interceptor resuelve eso interceptando la apertura de cada
-// conexión EF Core y ejecutando:
+// Esto garantiza que las políticas RLS de Postgres puedan filtrar
+// por tenant incluso cuando la petición no lleva JWT (p.ej. workers
+// internos que usan directamente app_user).
 //
-//   SELECT claim_tenant_context('<tenant_id>', '<role>', '<user_id>')
+// SEGURIDAD
+// ─────────
+// · claim_tenant_context() usa SET LOCAL → GUCs viven solo dentro
+//   de la transacción actual; se limpian al commit/rollback.
+//   Crítico para connection pools (PgBouncer / Supabase pooler).
+// · Parámetros SQL tipados → no hay posibilidad de inyección.
+// · Si ITenantContext no está inicializado se omite la llamada y
+//   Postgres usará current_tenant_id() = NULL, por lo que RLS
+//   devolverá 0 filas en cualquier tabla de negocio.
+// · Los errores de la llamada a Postgres se capturan, se loguean
+//   con contexto estructurado y se relanza para no swallow-ear.
 //
-// Eso establece los GUCs app.tenant_id / app.user_role / app.user_id
-// con SET LOCAL (scope = transacción), de modo que las políticas RLS
-// de Postgres puedan leerlos vía current_tenant_id() y current_user_role().
-//
-// GARANTÍAS DE SEGURIDAD
-// ──────────────────────
-// · SET LOCAL dentro de claim_tenant_context(): los GUCs se limpian al
-//   COMMIT/ROLLBACK, evitando contaminación entre conexiones del pool
-//   (PgBouncer / Supabase Transaction Pooler).
-// · Si ITenantContext no está inicializado, la función de Postgres
-//   lanzará SEC-001 (assert_tenant_context) en el siguiente DML.
-// · El interceptor NO hace bypass de RLS; solo inyecta el contexto
-//   que las políticas RLS usan para filtrar.
-//
-// IMPLEMENTACIÓN: IDbConnectionInterceptor
-// ──────────────────────────────────────────
-// ConnectionOpened / ConnectionOpenedAsync se invocan justo después
-// de que la conexión ADO.NET subyacente queda lista para recibir
-// comandos. Es el punto correcto para inyectar el GUC de sesión.
+// IMPLEMENTACIÓN: DbConnectionInterceptor
+// ────────────────────────────────────────
+// ConnectionOpened/Async: se invocan tras que la conexión ADO.NET
+// queda lista para recibir comandos, antes de cualquier query.
 // ════════════════════════════════════════════════════════════════
 
 /// <summary>
-/// Interceptor de EF Core que inyecta el contexto de tenant (SET LOCAL)
-/// al abrir la conexión, mediante la función de Postgres
-/// <c>claim_tenant_context()</c>.
+/// Interceptor EF Core que llama a <c>claim_tenant_context()</c>
+/// al abrir cada conexión, inyectando los GUCs de tenant con SET LOCAL.
 /// </summary>
 public sealed class TenantDbContextInterceptor : DbConnectionInterceptor
 {
-    private readonly ITenantContext                       _tenantCtx;
+    private const string ClaimSql =
+        "SELECT claim_tenant_context(@tenant_id::uuid, @user_role::text, @user_id::uuid)";
+
+    private readonly ITenantContext                       _tenant;
     private readonly ILogger<TenantDbContextInterceptor> _logger;
 
     public TenantDbContextInterceptor(
-        ITenantContext tenantCtx,
+        ITenantContext                       tenant,
         ILogger<TenantDbContextInterceptor> logger)
     {
-        _tenantCtx = tenantCtx;
-        _logger    = logger;
+        _tenant = tenant;
+        _logger = logger;
     }
 
-    // ── Síncrono ──────────────────────────────────────────────────
+    // ── Punto de entrada síncrono ─────────────────────────────────────────────
 
     public override void ConnectionOpened(
         DbConnection connection,
         ConnectionEndEventData eventData)
     {
-        SetTenantContextSync(connection);
+        if (!_tenant.IsInitialized)
+        {
+            LogSkipped();
+            return;
+        }
+
+        try
+        {
+            using var cmd = BuildCommand(connection);
+            cmd.ExecuteNonQuery();
+            LogClaimed();
+        }
+        catch (Exception ex)
+        {
+            LogAndRethrow(ex);
+        }
     }
 
-    // ── Asíncrono ─────────────────────────────────────────────────
+    // ── Punto de entrada asíncrono ────────────────────────────────────────────
 
     public override async Task ConnectionOpenedAsync(
-        DbConnection connection,
+        DbConnection       connection,
         ConnectionEndEventData eventData,
-        CancellationToken cancellationToken = default)
+        CancellationToken  ct = default)
     {
-        await SetTenantContextAsync(connection, cancellationToken);
-    }
-
-    // ── Implementación ────────────────────────────────────────────
-
-    private void SetTenantContextSync(DbConnection connection)
-    {
-        if (!_tenantCtx.IsInitialized)
+        if (!_tenant.IsInitialized)
         {
-            _logger.LogDebug(
-                "TenantDbContextInterceptor: contexto no inicializado, " +
-                "omitiendo claim_tenant_context (posible endpoint público).");
+            LogSkipped();
             return;
         }
 
-        using var cmd = connection.CreateCommand();
-        BuildCommand(cmd);
-        cmd.ExecuteNonQuery();
-
-        _logger.LogDebug(
-            "claim_tenant_context ejecutado. TenantId={TenantId} Role={Role}",
-            _tenantCtx.TenantId, _tenantCtx.UserRole);
-    }
-
-    private async Task SetTenantContextAsync(
-        DbConnection connection,
-        CancellationToken ct)
-    {
-        if (!_tenantCtx.IsInitialized)
+        try
         {
-            _logger.LogDebug(
-                "TenantDbContextInterceptor: contexto no inicializado, " +
-                "omitiendo claim_tenant_context (posible endpoint público).");
-            return;
+            using var cmd = BuildCommand(connection);
+            await cmd.ExecuteNonQueryAsync(ct);
+            LogClaimed();
         }
-
-        using var cmd = connection.CreateCommand();
-        BuildCommand(cmd);
-        await cmd.ExecuteNonQueryAsync(ct);
-
-        _logger.LogDebug(
-            "claim_tenant_context ejecutado (async). TenantId={TenantId} Role={Role}",
-            _tenantCtx.TenantId, _tenantCtx.UserRole);
+        catch (Exception ex)
+        {
+            LogAndRethrow(ex);
+        }
     }
 
-    /// <summary>
-    /// Construye el comando SQL para llamar a claim_tenant_context().
-    /// Usa parámetros SQL para evitar inyección de valores.
-    /// </summary>
-    private void BuildCommand(DbCommand cmd)
+    // ── Construcción del comando ──────────────────────────────────────────────
+
+    private DbCommand BuildCommand(DbConnection connection)
     {
-        // claim_tenant_context es SECURITY DEFINER + SET search_path = public
-        // Los GUCs se establecen con SET LOCAL (scope = transacción actual)
-        cmd.CommandText =
-            "SELECT claim_tenant_context(@tenant_id::uuid, @user_role::text, @user_id::uuid)";
+        var cmd = connection.CreateCommand();
+        cmd.CommandText = ClaimSql;
 
-        var pTenant = cmd.CreateParameter();
-        pTenant.ParameterName = "tenant_id";
-        pTenant.Value         = _tenantCtx.TenantId.HasValue
-                                    ? (object)_tenantCtx.TenantId.Value
-                                    : DBNull.Value;
-        cmd.Parameters.Add(pTenant);
+        AddParam(cmd, "tenant_id",
+            _tenant.TenantId.HasValue ? (object)_tenant.TenantId.Value : DBNull.Value);
 
-        // Si no hay rol, usar 'service' como valor por defecto seguro
-        var pRole = cmd.CreateParameter();
-        pRole.ParameterName = "user_role";
-        pRole.Value         = string.IsNullOrEmpty(_tenantCtx.UserRole)
-                                  ? (object)"service"
-                                  : _tenantCtx.UserRole;
-        cmd.Parameters.Add(pRole);
+        // Rol por defecto 'service' si el contexto está inicializado pero sin rol
+        // (caso: worker backend sin usuario humano)
+        AddParam(cmd, "user_role",
+            string.IsNullOrEmpty(_tenant.UserRole)
+                ? (object)"service"
+                : _tenant.UserRole);
 
-        var pUser = cmd.CreateParameter();
-        pUser.ParameterName = "user_id";
-        pUser.Value         = _tenantCtx.UserId.HasValue
-                                  ? (object)_tenantCtx.UserId.Value
-                                  : DBNull.Value;
-        cmd.Parameters.Add(pUser);
+        AddParam(cmd, "user_id",
+            _tenant.UserId.HasValue ? (object)_tenant.UserId.Value : DBNull.Value);
+
+        return cmd;
+    }
+
+    private static void AddParam(DbCommand cmd, string name, object value)
+    {
+        var p = cmd.CreateParameter();
+        p.ParameterName = name;
+        p.Value         = value;
+        cmd.Parameters.Add(p);
+    }
+
+    // ── Helpers de log ────────────────────────────────────────────────────────
+
+    private void LogSkipped() =>
+        _logger.LogDebug(
+            "[TenantInterceptor] Contexto no inicializado — " +
+            "claim_tenant_context omitido (endpoint público o anonimo).");
+
+    private void LogClaimed() =>
+        _logger.LogDebug(
+            "[TenantInterceptor] claim_tenant_context ejecutado. " +
+            "TenantId={TenantId} Role={Role} UserId={UserId}",
+            _tenant.TenantId, _tenant.UserRole, _tenant.UserId);
+
+    private void LogAndRethrow(Exception ex)
+    {
+        _logger.LogError(ex,
+            "[TenantInterceptor] Error al llamar a claim_tenant_context(). " +
+            "TenantId={TenantId} Role={Role}. " +
+            "La conexión se cerrará y EF Core reintentará según su política de retry.",
+            _tenant.TenantId, _tenant.UserRole);
+
+        // Re-lanzar para que EF Core gestione el retry (EnableRetryOnFailure)
+        throw new InvalidOperationException(
+            $"Error al ejecutar claim_tenant_context() en Postgres. " +
+            $"No se pudo inicializar el contexto de tenant para TenantId={_tenant.TenantId}. " +
+            $"Ver inner exception.", ex);
     }
 }
