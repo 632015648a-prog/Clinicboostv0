@@ -1,10 +1,3 @@
-﻿namespace ClinicBoost.Tests;
-
-public class UnitTest1
-{
-    [Fact]
-    public void Test1()
-    {
-
-    }
-}
+// Este fichero existe solo para satisfacer el template inicial de xUnit.
+// Los tests reales están en subdirectorios por área funcional.
+// Eliminar este fichero si se prefiere mantener limpio el directorio raíz.

@@ -75,6 +75,34 @@ public sealed class AppDbContext : DbContext
     /// </summary>
     private static void ConfigureImmutableEntities(ModelBuilder model)
     {
+        // ProcessedEvent — tabla de idempotencia, sin RLS, sin tenant_id obligatorio
+        // INSERT only: no se actualiza ni elimina nunca.
+        model.Entity<ProcessedEvent>(e =>
+        {
+            e.ToTable("processed_events");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.EventType).HasColumnName("event_type").IsRequired()
+             .HasMaxLength(100);
+            e.Property(x => x.EventId).HasColumnName("event_id").IsRequired()
+             .HasMaxLength(255);
+            e.Property(x => x.TenantId).HasColumnName("tenant_id");
+            e.Property(x => x.PayloadHash).HasColumnName("payload_hash")
+             .HasMaxLength(64);
+            e.Property(x => x.ProcessedAt).HasColumnName("processed_at");
+            e.Property(x => x.Metadata).HasColumnName("metadata")
+             .HasColumnType("text");
+
+            // Índice de rendimiento para consultas de deduplicación.
+            // La constraint UNIQUE real con NULLS NOT DISTINCT está en Postgres
+            // (migración 0009). No marcamos IsUnique() aquí para evitar que
+            // EF InMemory (usado en tests unitarios) bloquee inserciones
+            // multi-tenant con tenant_id nullable.
+            e.HasIndex(x => new { x.EventType, x.EventId, x.TenantId })
+             .HasDatabaseName("uq_processed_events_type_id_tenant");
+        });
+
+
         // PatientConsents — inmutable
         model.Entity<PatientConsent>(e =>
         {

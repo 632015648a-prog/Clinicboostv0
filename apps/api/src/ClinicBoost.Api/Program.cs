@@ -1,11 +1,10 @@
-using ClinicBoost.Api.Infrastructure.Database;
 using ClinicBoost.Api.Infrastructure.Extensions;
 using ClinicBoost.Api.Features.Health;
 using ClinicBoost.Api.Infrastructure.Middleware;
 using Scalar.AspNetCore;
 using Serilog;
 
-// ─── Bootstrap Serilog early ─────────────────────────────────────────────────
+// ─── Bootstrap Serilog early (antes de construir el host) ────────────────────
 Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
     .CreateBootstrapLogger();
@@ -21,9 +20,12 @@ try
         .Enrich.FromLogContext()
         .Enrich.WithProperty("Application", "ClinicBoost.Api")
         .WriteTo.Console(outputTemplate:
-            "[{Timestamp:HH:mm:ss} {Level:u3}] [{TenantId}] {Message:lj}{NewLine}{Exception}"));
+            "[{Timestamp:HH:mm:ss} {Level:u3}] " +
+            "[T:{TenantId}] [U:{UserId}] [R:{UserRole}] " +
+            "{Message:lj}{NewLine}{Exception}"));
 
     // ─── Infrastructure ───────────────────────────────────────────────────────
+    // Orden importante: Database registra TenantContext + interceptor antes que Auth
     builder.Services.AddClinicBoostDatabase(builder.Configuration);
     builder.Services.AddClinicBoostAuth(builder.Configuration);
     builder.Services.AddClinicBoostCors(builder.Configuration);
@@ -34,22 +36,31 @@ try
     // ─── OpenAPI / Scalar ────────────────────────────────────────────────────
     builder.Services.AddOpenApi();
 
-    // ─── Vertical Slice features ─────────────────────────────────────────────
-    // Cada feature registra sus propios servicios mediante extension methods
+    // ─── Features (Vertical Slice) ───────────────────────────────────────────
     builder.Services.AddFeatureServices();
 
     var app = builder.Build();
 
-    // ─── Middleware pipeline ─────────────────────────────────────────────────
+    // ─── Middleware pipeline ──────────────────────────────────────────────────
+    // ORDEN CRÍTICO — no reordenar sin revisar ADR-005:
+    //
+    //  1. Serilog request logging  (antes de todo para capturar toda la petición)
+    //  2. CORS                     (preflight OPTIONS antes de auth)
+    //  3. UseAuthentication        (valida JWT y popula ctx.User)
+    //  4. UseAuthorization         (aplica políticas [Authorize])
+    //  5. UseTenantMiddleware      (extrae claims → ITenantContext)
+    //  6. TenantAuthorization      (valida rol mínimo por endpoint)
+    //  7. Endpoints
+
     app.UseSerilogRequestLogging(opts =>
     {
         opts.EnrichDiagnosticContext = (diagCtx, httpCtx) =>
         {
-            // Leer TenantId desde ITenantContext (Scoped) si está disponible
             var tenantCtx = httpCtx.RequestServices
-                .GetService<ClinicBoost.Api.Infrastructure.Middleware.ITenantContext>();
-            diagCtx.Set("TenantId", tenantCtx?.TenantId?.ToString() ?? "unknown");
-            diagCtx.Set("UserId",   httpCtx.User.FindFirst("sub")?.Value ?? "anon");
+                .GetService<ClinicBoost.Api.Infrastructure.Tenants.ITenantContext>();
+            diagCtx.Set("TenantId", tenantCtx?.TenantId?.ToString() ?? "-");
+            diagCtx.Set("UserId",   tenantCtx?.UserId?.ToString()   ?? "-");
+            diagCtx.Set("UserRole", tenantCtx?.UserRole             ?? "-");
         };
     });
 
@@ -67,12 +78,13 @@ try
     app.UseAuthentication();
     app.UseAuthorization();
 
-    // ─── Tenant middleware ────────────────────────────────────────────────────
-    // Popula ITenantContext (Scoped) con tenant_id, user_role y user_id del JWT.
-    // TenantDbContextInterceptor lo consume al inicio de cada transacción EF Core.
+    // Tenant middleware: popula ITenantContext desde JWT y enriquece LogContext
     app.UseTenantMiddleware();
 
-    // ─── Map endpoints (Vertical Slice) ──────────────────────────────────────
+    // Rol mínimo por endpoint vía [RequireRole("admin")] metadata
+    app.UseTenantAuthorizationMiddleware();
+
+    // ─── Endpoints (Vertical Slice) ───────────────────────────────────────────
     app.MapHealthEndpoints();
     app.MapFeatureEndpoints();
 
@@ -80,7 +92,7 @@ try
 }
 catch (Exception ex) when (ex is not HostAbortedException)
 {
-    Log.Fatal(ex, "ClinicBoost.Api terminó de forma inesperada");
+    Log.Fatal(ex, "ClinicBoost.Api terminó de forma inesperada.");
     return 1;
 }
 finally

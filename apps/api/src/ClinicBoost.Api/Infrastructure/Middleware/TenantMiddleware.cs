@@ -1,151 +1,149 @@
+using ClinicBoost.Api.Infrastructure.Tenants;
+
 namespace ClinicBoost.Api.Infrastructure.Middleware;
-
-// ════════════════════════════════════════════════════════════════
-// ITenantContext — contrato para acceder al contexto del tenant
-// activo en la petición HTTP actual.
-//
-// Se registra como Scoped en DI (una instancia por request).
-// TenantMiddleware lo rellena; el interceptor EF Core lo consume.
-// ════════════════════════════════════════════════════════════════
-
-/// <summary>
-/// Contexto del tenant activo en la petición HTTP actual.
-/// Poblado por TenantMiddleware a partir del JWT.
-/// Consumido por TenantDbContextInterceptor al inicio de cada
-/// transacción EF Core para llamar a claim_tenant_context().
-/// </summary>
-public interface ITenantContext
-{
-    /// <summary>Tenant activo. Null si la petición no está autenticada.</summary>
-    Guid? TenantId { get; }
-
-    /// <summary>
-    /// Rol del usuario activo: owner | admin | therapist | receptionist | service.
-    /// Null si no autenticado.
-    /// </summary>
-    string? UserRole { get; }
-
-    /// <summary>ID del usuario autenticado (sub del JWT). Null si no autenticado.</summary>
-    Guid? UserId { get; }
-
-    /// <summary>True si el contexto está completamente inicializado.</summary>
-    bool IsInitialized { get; }
-}
-
-/// <summary>
-/// Implementación mutable de ITenantContext.
-/// Solo TenantMiddleware puede escribir en ella.
-/// </summary>
-public sealed class TenantContext : ITenantContext
-{
-    public Guid?   TenantId       { get; private set; }
-    public string? UserRole       { get; private set; }
-    public Guid?   UserId         { get; private set; }
-    public bool    IsInitialized  => TenantId.HasValue;
-
-    internal void Initialize(Guid tenantId, string? userRole, Guid? userId)
-    {
-        TenantId = tenantId;
-        UserRole = userRole;
-        UserId   = userId;
-    }
-}
-
 
 // ════════════════════════════════════════════════════════════════
 // TenantMiddleware
 //
-// Extrae tenant_id, user_role y user_id (sub) del JWT y
-// popula ITenantContext (Scoped).
+// POSICIÓN en el pipeline (Program.cs):
+//   UseAuthentication() → UseAuthorization() → UseTenantMiddleware()
 //
-// Posición en el pipeline: DESPUÉS de UseAuthentication().
+// RESPONSABILIDAD:
+//   Extrae los claims de tenant del JWT autenticado y popula
+//   ITenantContext (Scoped) para el resto de la petición.
+//
+// FLUJO:
+//   1. Si el usuario no está autenticado → pasa al siguiente middleware
+//      sin tocar el contexto (endpoints públicos funcionan normalmente).
+//   2. Si autenticado pero tenant_id ausente o inválido → log Warning +
+//      pasa al siguiente. El endpoint protegido fallará con 403/401.
+//   3. Si autenticado y claims válidos → inicializa TenantContext + enriquece
+//      LogContext de Serilog con TenantId, UserId y Role.
+//
+// SEGURIDAD:
+//   · NO lanza excepciones que aborten la petición; deja que los endpoints
+//     y TenantDbContextInterceptor manejen el contexto incompleto.
+//   · El ClaimsExtractor valida los tipos de datos de los claims.
+//   · La doble inicialización queda protegida en TenantContext.Initialize().
 // ════════════════════════════════════════════════════════════════
 
 /// <summary>
-/// Middleware que extrae el contexto de tenant del JWT autenticado.
-///
-/// Fuentes consultadas (en orden):
-///   1. Claim directo "tenant_id"
-///   2. Claim "app_metadata.tenant_id" (Supabase app_metadata)
-///
-/// El contexto queda disponible en ITenantContext (Scoped DI)
-/// para el resto de la petición, incluyendo el interceptor EF Core.
+/// Middleware que extrae el contexto de tenant (tenant_id, user_role, user_id)
+/// del JWT autenticado y lo popula en <see cref="ITenantContext"/> (Scoped DI).
 /// </summary>
 public sealed class TenantMiddleware
 {
-    private readonly RequestDelegate             _next;
-    private readonly ILogger<TenantMiddleware>   _logger;
+    private readonly RequestDelegate           _next;
+    private readonly ILogger<TenantMiddleware> _logger;
+    private readonly ClaimsExtractor           _extractor;
 
-    public TenantMiddleware(RequestDelegate next, ILogger<TenantMiddleware> logger)
+    public TenantMiddleware(
+        RequestDelegate           next,
+        ILogger<TenantMiddleware> logger,
+        ClaimsExtractor           extractor)
     {
-        _next   = next;
-        _logger = logger;
+        _next      = next;
+        _logger    = logger;
+        _extractor = extractor;
     }
 
     public async Task InvokeAsync(HttpContext ctx)
     {
-        if (ctx.User.Identity?.IsAuthenticated == true)
+        if (ctx.User.Identity?.IsAuthenticated != true)
         {
-            // ── Extraer tenant_id ──────────────────────────────────
-            var rawTenantId = ctx.User.FindFirst("tenant_id")?.Value
-                           ?? ctx.User.FindFirst("app_metadata.tenant_id")?.Value;
-
-            if (string.IsNullOrWhiteSpace(rawTenantId) ||
-                !Guid.TryParse(rawTenantId, out var tenantId))
-            {
-                _logger.LogWarning(
-                    "JWT autenticado sin claim tenant_id válido. Path={Path} Sub={Sub}",
-                    ctx.Request.Path,
-                    ctx.User.FindFirst("sub")?.Value ?? "unknown");
-
-                // Continuar sin inicializar el contexto;
-                // los endpoints que requieran tenant usarán [Authorize] + el interceptor
-                // lanzará assert_tenant_context si se intenta una query sin contexto.
-                await _next(ctx);
-                return;
-            }
-
-            // ── Extraer user_role ──────────────────────────────────
-            var userRole = ctx.User.FindFirst("user_role")?.Value
-                        ?? ctx.User.FindFirst("app_metadata.user_role")?.Value;
-
-            // ── Extraer user_id (sub) ──────────────────────────────
-            var rawSub = ctx.User.FindFirst("sub")?.Value;
-            Guid.TryParse(rawSub, out var userId);
-
-            // ── Inicializar ITenantContext ─────────────────────────
-            var tenantCtx = ctx.RequestServices.GetRequiredService<TenantContext>();
-            tenantCtx.Initialize(
-                tenantId,
-                userRole,
-                userId == Guid.Empty ? null : userId);
-
-            _logger.LogDebug(
-                "TenantContext inicializado. TenantId={TenantId} Role={Role} UserId={UserId}",
-                tenantId, userRole, userId);
+            // Petición sin autenticar: pasa al siguiente sin inicializar el contexto.
+            // Los endpoints protegidos con [Authorize] devolverán 401 antes de llegar aquí.
+            await _next(ctx);
+            return;
         }
 
-        await _next(ctx);
+        // ── 1. Extraer tenant_id (obligatorio para usuarios autenticados) ──────
+        var tenantResult = _extractor.ExtractTenantId(ctx.User);
+        if (!tenantResult.Success)
+        {
+            _logger.LogWarning(
+                "JWT válido sin tenant_id extraíble. " +
+                "Code={Code} Path={Path} Sub={Sub} Detail={Detail}",
+                tenantResult.ErrorCode,
+                ctx.Request.Path,
+                ctx.User.FindFirst("sub")?.Value ?? "unknown",
+                tenantResult.ErrorMsg);
+
+            // No abortamos: el endpoint puede ser público o de administración
+            await _next(ctx);
+            return;
+        }
+
+        // ── 2. Extraer user_role (opcional; si inválido logueamos y seguimos) ──
+        var roleResult = _extractor.ExtractUserRole(ctx.User);
+        if (!roleResult.Success)
+        {
+            _logger.LogWarning(
+                "JWT contiene user_role inválido; se ignorará. " +
+                "Code={Code} TenantId={TenantId} Detail={Detail}",
+                roleResult.ErrorCode,
+                tenantResult.Value,
+                roleResult.ErrorMsg);
+        }
+
+        // ── 3. Extraer user_id (sub) ───────────────────────────────────────────
+        var userIdResult = _extractor.ExtractUserId(ctx.User);
+        if (!userIdResult.Success)
+        {
+            _logger.LogWarning(
+                "Claim sub inválido en JWT; se usará null. " +
+                "Code={Code} TenantId={TenantId} Detail={Detail}",
+                userIdResult.ErrorCode,
+                tenantResult.Value,
+                userIdResult.ErrorMsg);
+        }
+
+        // ── 4. Inicializar TenantContext ───────────────────────────────────────
+        var tenantCtx = ctx.RequestServices.GetRequiredService<TenantContext>();
+        tenantCtx.Initialize(
+            tenantResult.Value,
+            roleResult.Success ? roleResult.Value : null,
+            userIdResult.Success ? userIdResult.Value : null);
+
+        // ── 5. Enriquecer LogContext de Serilog con campos de tenant ───────────
+        // Cualquier log emitido DESPUÉS de este punto llevará estos campos
+        using (Serilog.Context.LogContext.PushProperty("TenantId", tenantResult.Value))
+        using (Serilog.Context.LogContext.PushProperty("UserId",   userIdResult.Value?.ToString() ?? "null"))
+        using (Serilog.Context.LogContext.PushProperty("UserRole", roleResult.Value  ?? "unknown"))
+        {
+            _logger.LogDebug(
+                "TenantContext inicializado. TenantId={TenantId} Role={Role} UserId={UserId}",
+                tenantResult.Value,
+                roleResult.Value,
+                userIdResult.Value);
+
+            await _next(ctx);
+        }
     }
 }
 
-// ── Extensión para Program.cs ──────────────────────────────────
+// ── Extensiones de registro y pipeline ───────────────────────────────────────
 
 public static class TenantMiddlewareExtensions
 {
+    /// <summary>
+    /// Agrega TenantMiddleware al pipeline HTTP.
+    /// Debe colocarse DESPUÉS de UseAuthentication() y UseAuthorization().
+    /// </summary>
     public static IApplicationBuilder UseTenantMiddleware(
         this IApplicationBuilder app)
         => app.UseMiddleware<TenantMiddleware>();
 
     /// <summary>
-    /// Registra ITenantContext y TenantContext como Scoped.
-    /// Llamar en AddFeatureServices() o directamente en Program.cs.
+    /// Registra ITenantContext, TenantContext, ClaimsExtractor como servicios DI.
+    /// Llamar en AddClinicBoostDatabase() o Program.cs.
     /// </summary>
     public static IServiceCollection AddTenantContext(
         this IServiceCollection services)
     {
         services.AddScoped<TenantContext>();
         services.AddScoped<ITenantContext>(sp => sp.GetRequiredService<TenantContext>());
+        services.AddSingleton<ClaimsExtractor>();   // Sin estado → Singleton
         return services;
     }
 }

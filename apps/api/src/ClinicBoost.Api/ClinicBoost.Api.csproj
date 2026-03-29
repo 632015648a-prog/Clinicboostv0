@@ -26,4 +26,11 @@
     <ProjectReference Include="..\ClinicBoost.Domain\ClinicBoost.Domain.csproj" />
   </ItemGroup>
 
+  <!-- Permitir acceso a internal desde el proyecto de tests -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>ClinicBoost.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
 </Project>

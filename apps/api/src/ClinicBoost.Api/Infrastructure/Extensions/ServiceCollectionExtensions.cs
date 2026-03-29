@@ -1,17 +1,18 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.Extensions.Http.Resilience;
 using ClinicBoost.Api.Infrastructure.Database;
+using ClinicBoost.Api.Infrastructure.Idempotency;
 using ClinicBoost.Api.Infrastructure.Middleware;
-using EFCore.NamingConventions;
 using System.Text;
 
 namespace ClinicBoost.Api.Infrastructure.Extensions;
 
 public static class ServiceCollectionExtensions
 {
-    // ─── Base de datos ────────────────────────────────────────────────────────
+    // ─── Base de datos + TenantContext ────────────────────────────────────────
     public static IServiceCollection AddClinicBoostDatabase(
         this IServiceCollection services,
         IConfiguration config)
@@ -19,41 +20,42 @@ public static class ServiceCollectionExtensions
         var connStr = config.GetConnectionString("Supabase")
             ?? throw new InvalidOperationException(
                 "Connection string 'Supabase' no encontrada. " +
-                "Revisa appsettings o variables de entorno.");
+                "Revisa appsettings.json o variables de entorno (SUPABASE_DB_URL).");
 
-        // Registrar TenantContext como Scoped (un contexto por request HTTP)
+        // ITenantContext + TenantContext (Scoped) + ClaimsExtractor (Singleton)
         services.AddTenantContext();
 
-        // Registrar el interceptor que llama a claim_tenant_context() en cada transacción
+        // Interceptor que llama a claim_tenant_context() al abrir la conexión
         services.AddScoped<TenantDbContextInterceptor>();
 
         services.AddDbContext<AppDbContext>((sp, opts) =>
         {
-            // El interceptor es Scoped; AddDbContext con factory (sp) lo resuelve correctamente
             var interceptor = sp.GetRequiredService<TenantDbContextInterceptor>();
 
             opts.UseNpgsql(connStr, npgsql =>
-            {
-                npgsql.EnableRetryOnFailure(
-                    maxRetryCount: 3,
-                    maxRetryDelay: TimeSpan.FromSeconds(5),
-                    errorCodesToAdd: null);
-                npgsql.CommandTimeout(30);
-            })
-            .UseSnakeCaseNamingConvention()
-            .AddInterceptors(interceptor);
+                {
+                    npgsql.EnableRetryOnFailure(
+                        maxRetryCount: 3,
+                        maxRetryDelay: TimeSpan.FromSeconds(5),
+                        errorCodesToAdd: null);
+                    npgsql.CommandTimeout(30);
+                })
+                .UseSnakeCaseNamingConvention()
+                .AddInterceptors(interceptor);
         });
 
         return services;
     }
 
-    // ─── Auth JWT (Supabase GoTrue) ───────────────────────────────────────────
+    // ─── Auth JWT (Supabase GoTrue) + cookies httpOnly ────────────────────────
     public static IServiceCollection AddClinicBoostAuth(
         this IServiceCollection services,
         IConfiguration config)
     {
         var jwtSecret = config["Supabase:JwtSecret"]
-            ?? throw new InvalidOperationException("Supabase:JwtSecret no configurado.");
+            ?? throw new InvalidOperationException(
+                "Supabase:JwtSecret no configurado. " +
+                "Usar variable de entorno SUPABASE__JWTSECRET en producción.");
 
         services
             .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -62,27 +64,66 @@ public static class ServiceCollectionExtensions
                 opts.TokenValidationParameters = new TokenValidationParameters
                 {
                     ValidateIssuerSigningKey = true,
-                    IssuerSigningKey = new SymmetricSecurityKey(
-                        Encoding.UTF8.GetBytes(jwtSecret)),
-                    ValidateIssuer = false,   // Supabase no pone un issuer fijo en dev
-                    ValidateAudience = true,
-                    ValidAudience = "authenticated",
-                    ClockSkew = TimeSpan.FromSeconds(30)
+                    IssuerSigningKey         = new SymmetricSecurityKey(
+                                                   Encoding.UTF8.GetBytes(jwtSecret)),
+                    ValidateIssuer           = false,  // Supabase no fija issuer en dev
+                    ValidateAudience         = true,
+                    ValidAudience            = "authenticated",
+                    ClockSkew                = TimeSpan.FromSeconds(30),
+                    // Validar que el token no está expirado de forma explícita
+                    ValidateLifetime         = true,
+                    RequireExpirationTime    = true,
                 };
 
-                // Leer token de cookie httpOnly si no viene en header
+                // ── Leer token de cookie httpOnly ───────────────────────────
+                // Cookie tiene prioridad sobre el header Authorization para
+                // peticiones del frontend. Las peticiones server-to-server
+                // pueden usar el header Bearer normalmente.
                 opts.Events = new JwtBearerEvents
                 {
                     OnMessageReceived = ctx =>
                     {
-                        if (ctx.Request.Cookies.TryGetValue("sb-access-token", out var cookie))
+                        if (ctx.Request.Cookies.TryGetValue("sb-access-token", out var cookie)
+                            && !string.IsNullOrWhiteSpace(cookie))
+                        {
                             ctx.Token = cookie;
+                        }
+                        return Task.CompletedTask;
+                    },
+
+                    OnAuthenticationFailed = ctx =>
+                    {
+                        // Log estructurado; no exponer detalles del error al cliente
+                        var logger = ctx.HttpContext.RequestServices
+                            .GetRequiredService<ILogger<JwtBearerEvents>>();
+                        logger.LogWarning(
+                            "JWT authentication failed. " +
+                            "Path={Path} Error={ErrorType}",
+                            ctx.HttpContext.Request.Path,
+                            ctx.Exception?.GetType().Name ?? "unknown");
+
                         return Task.CompletedTask;
                     }
                 };
+
+                // No revelar detalles de validación JWT al cliente
+                opts.IncludeErrorDetails = false;
             });
 
-        services.AddAuthorization();
+        services.AddAuthorization(opts =>
+        {
+            // Política por defecto: require authenticated
+            opts.DefaultPolicy = new AuthorizationPolicyBuilder()
+                .RequireAuthenticatedUser()
+                .Build();
+
+            // Política "RequireTenant": require authenticated + tenant_id en claims
+            // Usada como fallback en endpoints que no usan [RequireRole]
+            opts.AddPolicy("RequireTenant", p =>
+                p.RequireAuthenticatedUser()
+                 .RequireClaim("tenant_id"));
+        });
+
         return services;
     }
 
@@ -92,14 +133,15 @@ public static class ServiceCollectionExtensions
         IConfiguration config)
     {
         var origins = config.GetSection("Cors:AllowedOrigins").Get<string[]>()
-            ?? ["http://localhost:5173"];
+                      ?? ["http://localhost:5173"];
 
         services.AddCors(opts =>
             opts.AddPolicy("ClinicBoostPolicy", p =>
                 p.WithOrigins(origins)
                  .AllowAnyMethod()
                  .AllowAnyHeader()
-                 .AllowCredentials()));   // Necesario para cookies httpOnly
+                 .AllowCredentials()       // Requerido para cookies httpOnly
+                 .SetPreflightMaxAge(TimeSpan.FromMinutes(10))));
 
         return services;
     }
@@ -118,24 +160,53 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
-    // ─── Resiliencia para HttpClients externos (Microsoft.Extensions.Http.Resilience) ────
+    // ─── Resiliencia para HttpClients externos ────────────────────────────────
     public static IServiceCollection AddClinicBoostResilience(
         this IServiceCollection services)
     {
-        // Twilio HttpClient con retry exponencial + circuit breaker (Polly v8 API)
         services.AddHttpClient("Twilio", c =>
             {
                 c.BaseAddress = new Uri("https://api.twilio.com/");
-                c.Timeout = TimeSpan.FromSeconds(15);
+                c.Timeout     = TimeSpan.FromSeconds(15);
             })
             .AddStandardResilienceHandler(opts =>
             {
-                opts.Retry.MaxRetryAttempts = 3;
-                opts.Retry.Delay = TimeSpan.FromSeconds(2);
-                opts.CircuitBreaker.SamplingDuration  = TimeSpan.FromSeconds(60);
-                opts.CircuitBreaker.BreakDuration      = TimeSpan.FromSeconds(30);
+                opts.Retry.MaxRetryAttempts              = 3;
+                opts.Retry.Delay                         = TimeSpan.FromSeconds(2);
+                opts.CircuitBreaker.SamplingDuration     = TimeSpan.FromSeconds(60);
+                opts.CircuitBreaker.BreakDuration        = TimeSpan.FromSeconds(30);
             });
 
+        return services;
+    }
+
+    // ─── HttpClient para AI (OpenAI / Anthropic Claude) ──────────────────────
+    public static IServiceCollection AddAiResilience(
+        this IServiceCollection services)
+    {
+        services.AddHttpClient("OpenAI", c =>
+            {
+                c.BaseAddress = new Uri("https://api.openai.com/");
+                c.Timeout     = TimeSpan.FromSeconds(60);
+            })
+            .AddStandardResilienceHandler(opts =>
+            {
+                opts.Retry.MaxRetryAttempts          = 2;
+                opts.Retry.Delay                     = TimeSpan.FromSeconds(3);
+                opts.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(60);
+                opts.CircuitBreaker.BreakDuration    = TimeSpan.FromSeconds(60);
+            });
+
+        return services;
+    }
+
+    // ─── Idempotencia transversal ─────────────────────────────────────────────
+    public static IServiceCollection AddIdempotencyService(
+        this IServiceCollection services)
+    {
+        // Scoped: una instancia por request HTTP o por scope de job.
+        // Depende de AppDbContext (Scoped) e ITenantContext (Scoped).
+        services.AddScoped<IIdempotencyService, IdempotencyService>();
         return services;
     }
 
@@ -143,33 +214,17 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddFeatureServices(
         this IServiceCollection services)
     {
-        // Cada feature puede registrar sus servicios aquí conforme crece
-        // Ejemplo:  services.AddScoped<AppointmentService>();
-        return services;
-    }
+        // Registrar idempotencia (transversal a todos los features)
+        services.AddIdempotencyService();
 
-    // ─── HttpClient para AI (OpenAI/Claude) ───────────────────────────────────
-    public static IServiceCollection AddAiResilience(
-        this IServiceCollection services)
-    {
-        services.AddHttpClient("OpenAI", c =>
-            {
-                c.BaseAddress = new Uri("https://api.openai.com/");
-                c.Timeout = TimeSpan.FromSeconds(60); // AI puede tardar más
-            })
-            .AddStandardResilienceHandler(opts =>
-            {
-                opts.Retry.MaxRetryAttempts = 2;           // AI: menos reintentos (coste)
-                opts.Retry.Delay = TimeSpan.FromSeconds(3);
-                opts.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(60);
-                opts.CircuitBreaker.BreakDuration     = TimeSpan.FromSeconds(60);
-            });
-
+        // Cada feature registra sus propios servicios aquí conforme crece.
+        // Ejemplo:  services.AddScoped<MissedCallService>();
         return services;
     }
 }
 
-// ─── Extension para el pipeline HTTP ─────────────────────────────────────────
+// ─── Extensions para pipeline HTTP ───────────────────────────────────────────
+
 public static class ApplicationBuilderExtensions
 {
     public static IApplicationBuilder UseClinicBoostCors(
@@ -177,14 +232,13 @@ public static class ApplicationBuilderExtensions
         => app.UseCors("ClinicBoostPolicy");
 }
 
-// ─── Extension para mapear endpoints de features ─────────────────────────────
 public static class EndpointRouteBuilderExtensions
 {
     public static IEndpointRouteBuilder MapFeatureEndpoints(
         this IEndpointRouteBuilder app)
     {
-        // Cada feature mapea sus propios endpoints vía extension methods
-        // Ejemplo:  app.MapAppointmentEndpoints();
+        // Cada feature mapea sus propios endpoints vía extension methods.
+        // Ejemplo:  app.MapAppointmentsEndpoints();
         return app;
     }
 }
