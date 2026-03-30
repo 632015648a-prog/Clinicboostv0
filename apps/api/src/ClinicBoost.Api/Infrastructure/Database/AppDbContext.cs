@@ -10,6 +10,7 @@ using ClinicBoost.Domain.Conversations;
 using ClinicBoost.Domain.Automation;
 using ClinicBoost.Domain.Revenue;
 using ClinicBoost.Domain.Webhooks;
+using ClinicBoost.Domain.Security;
 
 namespace ClinicBoost.Api.Infrastructure.Database;
 
@@ -68,6 +69,10 @@ public sealed class AppDbContext : DbContext
 
     // ─── Auditoría ────────────────────────────────────────────────────────────
     public DbSet<AuditLog>            AuditLogs           => Set<AuditLog>();
+
+    // ─── Seguridad: tokens y sesiones ────────────────────────────────────────
+    public DbSet<RefreshToken>        RefreshTokens       => Set<RefreshToken>();
+    public DbSet<SessionRevocation>   SessionRevocations  => Set<SessionRevocation>();
 
     protected override void OnModelCreating(ModelBuilder model)
     {
@@ -368,6 +373,54 @@ public sealed class AppDbContext : DbContext
             e.Property(x => x.CorrelationId).HasColumnName("correlation_id");
             e.Property(x => x.ReceivedAt).HasColumnName("received_at");
             e.Property(x => x.ProcessedAt).HasColumnName("processed_at");
+        });
+
+        // ── Security: RefreshToken ────────────────────────────────────────────
+        model.Entity<RefreshToken>(e =>
+        {
+            e.ToTable("refresh_tokens");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
+            e.Property(x => x.UserId).HasColumnName("user_id").IsRequired();
+            e.Property(x => x.TokenHash).HasColumnName("token_hash").IsRequired().HasMaxLength(64);
+            e.Property(x => x.FamilyId).HasColumnName("family_id").IsRequired();
+            e.Property(x => x.IssuedAt).HasColumnName("issued_at");
+            e.Property(x => x.ExpiresAt).HasColumnName("expires_at");
+            e.Property(x => x.UsedAt).HasColumnName("used_at");
+            e.Property(x => x.RevokedAt).HasColumnName("revoked_at");
+            e.Property(x => x.RevokedReason).HasColumnName("revoked_reason").HasMaxLength(64);
+            e.Property(x => x.IsRevoked).HasColumnName("is_revoked");
+            e.Property(x => x.IsCompromised).HasColumnName("is_compromised");
+            e.Property(x => x.ReplacedByTokenId).HasColumnName("replaced_by_token_id").HasMaxLength(36);
+            e.Property(x => x.IpAddress).HasColumnName("ip_address").HasMaxLength(45);
+            e.Property(x => x.UserAgent).HasColumnName("user_agent").HasMaxLength(512);
+
+            e.HasIndex(x => x.TokenHash).IsUnique()
+             .HasDatabaseName("uq_refresh_tokens_hash");
+            e.HasIndex(x => x.FamilyId)
+             .HasDatabaseName("ix_refresh_tokens_family");
+            e.HasIndex(x => new { x.UserId, x.TenantId, x.IsRevoked })
+             .HasDatabaseName("ix_refresh_tokens_user_tenant_active");
+        });
+
+        // ── Security: SessionRevocation (JWT JTI blacklist) ───────────────────
+        model.Entity<SessionRevocation>(e =>
+        {
+            e.ToTable("session_revocations");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
+            e.Property(x => x.UserId).HasColumnName("user_id").IsRequired();
+            e.Property(x => x.Jti).HasColumnName("jti").IsRequired().HasMaxLength(128);
+            e.Property(x => x.RevokedAt).HasColumnName("revoked_at");
+            e.Property(x => x.JwtExpiresAt).HasColumnName("jwt_expires_at");
+            e.Property(x => x.Reason).HasColumnName("reason").HasMaxLength(128);
+
+            e.HasIndex(x => x.Jti).IsUnique()
+             .HasDatabaseName("uq_session_revocations_jti");
+            e.HasIndex(x => x.JwtExpiresAt)
+             .HasDatabaseName("ix_session_revocations_expires_at");
         });
     }
 }
