@@ -74,6 +74,10 @@ try
         });
     }
 
+    // Cabeceras de seguridad (CSP, HSTS, X-Frame-Options…)
+    // Colocar antes de UseAuthentication
+    app.UseCspMiddleware();
+
     app.UseClinicBoostCors();
     app.UseAuthentication();
     app.UseAuthorization();

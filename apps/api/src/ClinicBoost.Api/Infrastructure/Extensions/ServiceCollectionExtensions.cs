@@ -15,6 +15,7 @@ using ClinicBoost.Api.Features.Agent;
 using ClinicBoost.Api.Features.Appointments;
 using ClinicBoost.Api.Features.Calendar;
 using ClinicBoost.Api.Features.Flow01;
+using ClinicBoost.Api.Features.Audit;
 using FluentValidation;
 using System.Text;
 
@@ -376,6 +377,40 @@ public static class ServiceCollectionExtensions
         services.AddCalendarFeature(config);
         services.AddAppointmentsFeature();
         services.AddFlow01Feature(config);
+        services.AddAuditSecurityFeature(config);
+        return services;
+    }
+
+    // ── Audit / Security feature ───────────────────────────────────────────────
+
+    public static IServiceCollection AddAuditSecurityFeature(
+        this IServiceCollection services,
+        IConfiguration config)
+    {
+        // IMemoryCache ya añadido por AddTwilioServices (idempotente)
+        services.AddMemoryCache();
+
+        // Opciones de refresh token
+        services.Configure<RefreshTokenOptions>(
+            config.GetSection(RefreshTokenOptions.SectionName));
+
+        // Opciones CSP
+        services.AddCspMiddleware(opts =>
+        {
+            config.GetSection(CspOptions.SectionName).Bind(opts);
+            // Fallback por defecto
+            if (string.IsNullOrWhiteSpace(opts.ReportUri))
+                opts.ReportUri = "/auth/csp-report";
+        });
+
+        // Servicios scoped
+        services.AddScoped<ISecurityAuditService, SecurityAuditService>();
+        services.AddScoped<IRefreshTokenService,  RefreshTokenService>();
+        services.AddScoped<ISessionInvalidationService, SessionInvalidationService>();
+
+        // Background worker de limpieza de JTIs expirados
+        services.AddHostedService<SessionCleanupWorker>();
+
         return services;
     }
 }
@@ -399,6 +434,7 @@ public static class EndpointRouteBuilderExtensions
         app.MapMessageStatusEndpoints();
         app.MapAppointmentEndpoints();
         app.MapFlow01Endpoints();
+        app.MapAuthEndpoints();
         return app;
     }
 }
