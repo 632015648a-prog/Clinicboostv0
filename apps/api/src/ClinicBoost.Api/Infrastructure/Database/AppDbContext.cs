@@ -1,5 +1,6 @@
 using ClinicBoost.Api.Features.Agent;
 using ClinicBoost.Api.Features.Calendar;
+using ClinicBoost.Api.Features.Flow01;
 using Microsoft.EntityFrameworkCore;
 using ClinicBoost.Domain.Tenants;
 using ClinicBoost.Domain.Appointments;
@@ -58,6 +59,9 @@ public sealed class AppDbContext : DbContext
 
     // ─── Agente conversacional ───────────────────────────────────────────────
     public DbSet<AgentTurn>           AgentTurns          => Set<AgentTurn>();
+
+    // ─── Métricas de flujos ───────────────────────────────────────────────
+    public DbSet<FlowMetricsEvent>    FlowMetricsEvents   => Set<FlowMetricsEvent>();
 
     // ─── Caché de calendarios iCal ────────────────────────────────────────────
     public DbSet<CalendarCache>       CalendarCaches      => Set<CalendarCache>();
@@ -282,6 +286,36 @@ public sealed class AppDbContext : DbContext
             e.Property(x => x.OccurredAt).HasColumnName("occurred_at");
             e.HasIndex(x => new { x.TenantId, x.ConversationId, x.OccurredAt })
              .HasDatabaseName("ix_agent_turns_conv");
+        });
+
+        // FlowMetricsEvent — métricas KPI por flujo (INSERT-only)
+        model.Entity<FlowMetricsEvent>(e =>
+        {
+            e.ToTable("flow_metrics_events");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
+            e.Property(x => x.PatientId).HasColumnName("patient_id");
+            e.Property(x => x.AppointmentId).HasColumnName("appointment_id");
+            e.Property(x => x.FlowId).HasColumnName("flow_id").IsRequired().HasMaxLength(32);
+            e.Property(x => x.MetricType).HasColumnName("metric_type").IsRequired().HasMaxLength(64);
+            e.Property(x => x.DurationMs).HasColumnName("duration_ms");
+            e.Property(x => x.RecoveredRevenue).HasColumnName("recovered_revenue")
+             .HasColumnType("numeric(10,2)");
+            e.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3);
+            e.Property(x => x.TwilioMessageSid).HasColumnName("twilio_message_sid").HasMaxLength(64);
+            e.Property(x => x.ErrorCode).HasColumnName("error_code").HasMaxLength(32);
+            e.Property(x => x.CorrelationId).HasColumnName("correlation_id").IsRequired().HasMaxLength(128);
+            e.Property(x => x.Metadata).HasColumnName("metadata").HasColumnType("jsonb");
+            e.Property(x => x.OccurredAt).HasColumnName("occurred_at");
+
+            // Índice principal para queries de KPI por tenant+flow+tipo+fecha
+            e.HasIndex(x => new { x.TenantId, x.FlowId, x.MetricType, x.OccurredAt })
+             .HasDatabaseName("ix_flow_metrics_tenant_flow_type_date");
+
+            // Índice para correlación end-to-end
+            e.HasIndex(x => x.CorrelationId)
+             .HasDatabaseName("ix_flow_metrics_correlation");
         });
 
         // CalendarCache — caché persistida de feeds iCal

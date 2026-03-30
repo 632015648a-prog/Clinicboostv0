@@ -1,0 +1,404 @@
+using System.Text.Json;
+using ClinicBoost.Api.Infrastructure.Database;
+using ClinicBoost.Api.Infrastructure.Idempotency;
+using ClinicBoost.Domain.Appointments;
+using ClinicBoost.Domain.Patients;
+using ClinicBoost.Domain.Revenue;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using TimeZoneConverter;
+
+namespace ClinicBoost.Api.Features.Flow01;
+
+// ════════════════════════════════════════════════════════════════════════════
+// Flow01Orchestrator
+//
+// Orquesta el flujo end-to-end:
+//   Llamada perdida → Mensaje WhatsApp de recovery → Reserva conversacional
+//
+// SECUENCIA
+// ─────────
+//  1. Verificar idempotencia (skip si ya procesado con mismo CallSid).
+//  2. Resolver o crear paciente por número de teléfono.
+//  3. Verificar consentimiento RGPD → skipped si no hay consentimiento.
+//  4. Construir OutboundMessageRequest con plantilla aprobada flow_01.
+//  5. Enviar WhatsApp via IOutboundMessageSender.
+//  6. Registrar métricas:
+//     · missed_call_received  → siempre
+//     · outbound_sent         → si el envío tiene éxito
+//     · outbound_failed       → si Twilio falla
+//  7. Si la reserva ocurrió en la misma sesión (AppointmentId en conversación):
+//     · Registrar appointment_booked + revenue telemetría (solo en backend).
+//
+// GARANTÍAS
+// ─────────
+//  · Idempotente: IIdempotencyService previene doble procesamiento del mismo CallSid.
+//  · Sin lógica económica en prompts ni frontend: toda la telemetría de revenue
+//    se calcula y persiste en este orquestador.
+//  · Timezone: nunca AddHours hardcoded; TZConvert.GetTimeZoneInfo del tenant.
+//  · Errores de Twilio: no lanzan excepción; IsSuccess=false en el resultado.
+//
+// REGISTRO EN DI
+// ──────────────
+//  Scoped (depende de AppDbContext, IOutboundMessageSender, IFlowMetricsService).
+// ════════════════════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Orquestador del flujo flow_01: llamada perdida → WA saliente → reserva.
+/// </summary>
+public sealed class Flow01Orchestrator
+{
+    // Nombre de la Content Template aprobada en Twilio para flow_01
+    // Configurable desde ICalOptions; aquí como constante por defecto.
+    private const string DefaultTemplateSid = "HXmissed_call_recovery_v1";
+
+    private readonly AppDbContext           _db;
+    private readonly IOutboundMessageSender _sender;
+    private readonly IFlowMetricsService    _metrics;
+    private readonly IIdempotencyService    _idempotency;
+    private readonly Flow01Options          _opts;
+    private readonly ILogger<Flow01Orchestrator> _logger;
+
+    public Flow01Orchestrator(
+        AppDbContext                db,
+        IOutboundMessageSender      sender,
+        IFlowMetricsService         metrics,
+        IIdempotencyService         idempotency,
+        IOptions<Flow01Options>     opts,
+        ILogger<Flow01Orchestrator> logger)
+    {
+        _db          = db;
+        _sender      = sender;
+        _metrics     = metrics;
+        _idempotency = idempotency;
+        _opts        = opts.Value;
+        _logger      = logger;
+    }
+
+    // ── ExecuteAsync ──────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Ejecuta el flujo flow_01 para una llamada perdida.
+    /// </summary>
+    /// <param name="tenantId">Tenant al que pertenece la llamada.</param>
+    /// <param name="callSid">SID de la llamada en Twilio (idempotencia).</param>
+    /// <param name="callerPhone">Número del paciente en formato E.164.</param>
+    /// <param name="clinicPhone">Número de la clínica (para el From del WA).</param>
+    /// <param name="callReceivedAt">Timestamp UTC en que llegó la llamada perdida.</param>
+    /// <param name="correlationId">ID de correlación end-to-end.</param>
+    /// <param name="ct">Token de cancelación.</param>
+    public async Task<Flow01Result> ExecuteAsync(
+        Guid              tenantId,
+        string            callSid,
+        string            callerPhone,
+        string            clinicPhone,
+        DateTimeOffset    callReceivedAt,
+        string            correlationId,
+        CancellationToken ct = default)
+    {
+        _logger.LogInformation(
+            "[Flow01] Iniciando. CallSid={CallSid} Caller={Caller} TenantId={TenantId}",
+            callSid, callerPhone, tenantId);
+
+        // ── 1. Idempotencia ───────────────────────────────────────────────────
+        var idempResult = await _idempotency.TryProcessAsync(
+            eventType: "flow_01.missed_call",
+            eventId:   callSid,
+            tenantId:  tenantId,
+            payload:   new { callSid, callerPhone, clinicPhone },
+            ct:        ct);
+
+        if (!idempResult.ShouldProcess)
+        {
+            _logger.LogInformation(
+                "[Flow01] Evento ya procesado. CallSid={CallSid} " +
+                "FirstProcessedAt={First}",
+                callSid, idempResult.FirstProcessedAt);
+
+            // Devolvemos success sin re-procesar
+            return Flow01Result.Skipped(Guid.Empty, "Evento ya procesado (idempotencia).");
+        }
+
+        // ── 2. Registrar métrica: llamada perdida recibida ────────────────────
+        await _metrics.RecordAsync(new FlowMetricsEvent
+        {
+            TenantId      = tenantId,
+            FlowId        = "flow_01",
+            MetricType    = "missed_call_received",
+            CorrelationId = correlationId,
+            Metadata      = JsonSerializer.Serialize(new
+            {
+                call_sid    = callSid,
+                caller_phone = callerPhone,
+                clinic_phone = clinicPhone,
+            }),
+        }, ct);
+
+        // ── 3. Resolver o crear paciente ──────────────────────────────────────
+        var patient = await ResolveOrCreatePatientAsync(
+            tenantId, callerPhone, ct);
+
+        // ── 4. Verificar consentimiento RGPD ──────────────────────────────────
+        if (!patient.RgpdConsent)
+        {
+            _logger.LogInformation(
+                "[Flow01] Sin consentimiento RGPD. PatientId={PatientId} TenantId={TenantId}",
+                patient.Id, tenantId);
+
+            await _metrics.RecordAsync(new FlowMetricsEvent
+            {
+                TenantId      = tenantId,
+                PatientId     = patient.Id,
+                FlowId        = "flow_01",
+                MetricType    = "flow_skipped",
+                CorrelationId = correlationId,
+                Metadata      = JsonSerializer.Serialize(new { reason = "no_rgpd_consent" }),
+            }, ct);
+
+            return Flow01Result.Skipped(patient.Id, "Paciente sin consentimiento RGPD.");
+        }
+
+        // ── 5. Obtener plantilla de la clínica ────────────────────────────────
+        var (templateSid, templateVars) = await BuildTemplateAsync(
+            tenantId, callerPhone, patient.FullName, ct);
+
+        // ── 6. Enviar WhatsApp de recovery ────────────────────────────────────
+        var sendRequest = new OutboundMessageRequest
+        {
+            ToPhone       = $"whatsapp:{callerPhone}",
+            FromPhone     = $"whatsapp:{clinicPhone}",
+            Channel       = "whatsapp",
+            TemplateSid   = templateSid,
+            TemplateVars  = templateVars,
+            Body          = string.IsNullOrEmpty(templateSid)
+                                ? BuildFallbackBody(patient.FullName)
+                                : null,
+            FlowId        = "flow_01",
+            TenantId      = tenantId,
+            PatientId     = patient.Id,
+            CorrelationId = correlationId,
+        };
+
+        var now = DateTimeOffset.UtcNow;
+        var sendResult = await _sender.SendAsync(sendRequest, ct);
+        var responseTimeMs = (long)(now - callReceivedAt).TotalMilliseconds;
+
+        if (sendResult.IsSuccess)
+        {
+            // ── 7. Métrica: outbound_sent con tiempo de respuesta ─────────────
+            await _metrics.RecordAsync(new FlowMetricsEvent
+            {
+                TenantId        = tenantId,
+                PatientId       = patient.Id,
+                FlowId          = "flow_01",
+                MetricType      = "outbound_sent",
+                DurationMs      = responseTimeMs,
+                TwilioMessageSid = sendResult.TwilioSid,
+                CorrelationId   = correlationId,
+                Metadata        = JsonSerializer.Serialize(new
+                {
+                    message_id  = sendResult.MessageId,
+                    twilio_sid  = sendResult.TwilioSid,
+                    channel     = "whatsapp",
+                    template_sid = templateSid,
+                }),
+            }, ct);
+
+            _logger.LogInformation(
+                "[Flow01] WhatsApp enviado. PatientId={PatientId} TwilioSid={Sid} " +
+                "ResponseTimeMs={Ms} TenantId={TenantId}",
+                patient.Id, sendResult.TwilioSid, responseTimeMs, tenantId);
+
+            return Flow01Result.Success(
+                patient.Id,
+                sendResult.MessageId,
+                sendResult.TwilioSid,
+                responseTimeMs);
+        }
+        else
+        {
+            // ── 8. Métrica: outbound_failed ───────────────────────────────────
+            await _metrics.RecordAsync(new FlowMetricsEvent
+            {
+                TenantId      = tenantId,
+                PatientId     = patient.Id,
+                FlowId        = "flow_01",
+                MetricType    = "outbound_failed",
+                DurationMs    = responseTimeMs,
+                ErrorCode     = sendResult.ErrorCode,
+                CorrelationId = correlationId,
+                Metadata      = JsonSerializer.Serialize(new
+                {
+                    error_code    = sendResult.ErrorCode,
+                    error_message = sendResult.ErrorMessage,
+                    message_id    = sendResult.MessageId,
+                }),
+            }, ct);
+
+            _logger.LogWarning(
+                "[Flow01] Envío fallido. PatientId={PatientId} ErrorCode={Code} " +
+                "Error={Error} TenantId={TenantId}",
+                patient.Id, sendResult.ErrorCode, sendResult.ErrorMessage, tenantId);
+
+            return Flow01Result.Failure(
+                patient.Id, "outbound_send",
+                $"[{sendResult.ErrorCode}] {sendResult.ErrorMessage}");
+        }
+    }
+
+    /// <summary>
+    /// Registra la conversión de una cita reservada a través de Flow01.
+    /// Llamado desde WhatsAppInboundWorker cuando el agente confirma una reserva
+    /// y la fuente de la cita es WhatsApp (Flow01).
+    /// </summary>
+    public async Task RecordAppointmentBookedAsync(
+        Guid              tenantId,
+        Guid              patientId,
+        Guid              appointmentId,
+        DateTimeOffset    outboundSentAt,
+        decimal?          revenue,
+        string            correlationId,
+        CancellationToken ct = default)
+    {
+        var durationMs = (long)(DateTimeOffset.UtcNow - outboundSentAt).TotalMilliseconds;
+
+        await _metrics.RecordAsync(new FlowMetricsEvent
+        {
+            TenantId         = tenantId,
+            PatientId        = patientId,
+            AppointmentId    = appointmentId,
+            FlowId           = "flow_01",
+            MetricType       = "appointment_booked",
+            DurationMs       = durationMs,
+            RecoveredRevenue = revenue,
+            CorrelationId    = correlationId,
+            Metadata         = JsonSerializer.Serialize(new
+            {
+                appointment_id = appointmentId,
+                revenue_eur    = revenue,
+                duration_ms    = durationMs,
+            }),
+        }, ct);
+
+        // RevenueEvent (lógica económica SOLO en backend — never en prompts ni frontend)
+        if (revenue.HasValue && revenue.Value > 0)
+        {
+            var revEvent = new RevenueEvent
+            {
+                TenantId             = tenantId,
+                AppointmentId        = appointmentId,
+                PatientId            = patientId,
+                EventType            = "missed_call_converted",
+                FlowId               = "flow_01",
+                Amount               = revenue.Value,
+                Currency             = "EUR",
+                IsSuccessFeeEligible = true,
+                SuccessFeeAmount     = Math.Round(revenue.Value * 0.15m, 2),
+                AttributionData      = JsonSerializer.Serialize(new
+                {
+                    flow        = "flow_01",
+                    channel     = "whatsapp",
+                    source      = "missed_call",
+                    correlation = correlationId,
+                }),
+            };
+            _db.RevenueEvents.Add(revEvent);
+            await _db.SaveChangesAsync(ct);
+
+            _logger.LogInformation(
+                "[Flow01] Revenue registrado. AppointmentId={AptId} Amount={Amt}EUR " +
+                "SuccessFee={Fee}EUR TenantId={TenantId}",
+                appointmentId, revenue.Value, revEvent.SuccessFeeAmount, tenantId);
+        }
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private async Task<Patient> ResolveOrCreatePatientAsync(
+        Guid tenantId, string phone, CancellationToken ct)
+    {
+        var existing = await _db.Patients
+            .FirstOrDefaultAsync(
+                p => p.TenantId == tenantId &&
+                     p.Phone    == phone     &&
+                     p.Status   != PatientStatus.Blocked,
+                ct);
+
+        if (existing is not null)
+            return existing;
+
+        var newPatient = new Patient
+        {
+            TenantId    = tenantId,
+            FullName    = $"Nuevo paciente ({phone})",
+            Phone       = phone,
+            Status      = PatientStatus.Active,
+            RgpdConsent = false,
+        };
+        _db.Patients.Add(newPatient);
+        await _db.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "[Flow01] Nuevo paciente creado. PatientId={Id} Phone={Phone} TenantId={TenantId}",
+            newPatient.Id, phone, tenantId);
+
+        return newPatient;
+    }
+
+    private async Task<(string? TemplateSid, string? TemplateVars)> BuildTemplateAsync(
+        Guid              tenantId,
+        string            callerPhone,
+        string            patientName,
+        CancellationToken ct)
+    {
+        // Buscar SID de plantilla en RuleConfig del tenant
+        var rule = await _db.RuleConfigs
+            .AsNoTracking()
+            .FirstOrDefaultAsync(r =>
+                r.TenantId == tenantId &&
+                r.FlowId   == "flow_01" &&
+                r.RuleKey  == "template_sid" &&
+                r.IsActive,
+                ct);
+
+        var templateSid = rule?.RuleValue ?? _opts.DefaultTemplateSid;
+
+        if (string.IsNullOrEmpty(templateSid))
+            return (null, null); // fallback a texto libre
+
+        // Variables de la plantilla (nombre del paciente para personalización)
+        var vars = JsonSerializer.Serialize(new Dictionary<string, string>
+        {
+            ["1"] = patientName.Split(' ')[0], // primer nombre
+        });
+
+        return (templateSid, vars);
+    }
+
+    private static string BuildFallbackBody(string patientName)
+    {
+        var firstName = patientName.Split(' ')[0];
+        return $"Hola {firstName}, hemos visto que intentaste llamarnos y no pudimos atenderte. " +
+               "¿En qué podemos ayudarte? Puedes escribirnos aquí y te atendemos en breve.";
+    }
+}
+
+// ── Opciones de configuración de Flow01 ──────────────────────────────────────
+
+/// <summary>
+/// Opciones de configuración de Flow01, enlazadas a la sección "Flow01Options".
+/// </summary>
+public sealed class Flow01Options
+{
+    public const string SectionName = "Flow01Options";
+
+    /// <summary>SID de la Content Template por defecto para el mensaje de recovery.</summary>
+    public string? DefaultTemplateSid { get; set; }
+
+    /// <summary>
+    /// Ventana máxima de tiempo (minutos) desde la llamada hasta intentar el envío.
+    /// Si el job se retrasa más de esta ventana, el envío se omite.
+    /// Por defecto: 60 minutos.
+    /// </summary>
+    public int MaxDelayMinutes { get; set; } = 60;
+}

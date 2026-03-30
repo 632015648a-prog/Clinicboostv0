@@ -1,51 +1,45 @@
+using ClinicBoost.Api.Features.Flow01;
 using ClinicBoost.Api.Infrastructure.Database;
 using ClinicBoost.Api.Infrastructure.Tenants;
-using ClinicBoost.Domain.Patients;
 using ClinicBoost.Domain.Automation;
 using Microsoft.EntityFrameworkCore;
 
 namespace ClinicBoost.Api.Features.Webhooks.Voice.MissedCall;
 
 // ════════════════════════════════════════════════════════════════════════════
-// MissedCallWorker  (flow_00 — Llamada perdida)
+// MissedCallWorker  (flow_01 — Llamada perdida → WA recovery)
 //
-// IHostedService que consume la cola IMissedCallJobQueue y ejecuta el trabajo
-// pesado de forma asíncrona, fuera del ciclo de vida del request HTTP.
+// IHostedService que consume la cola IMissedCallJobQueue y ejecuta el
+// flujo end-to-end delegando en Flow01Orchestrator.
 //
-// SECUENCIA DE PASOS (flow_00)
-// ────────────────────────────
-// 1. Crear un DI scope por job (el DbContext es Scoped).
-// 2. Filtrar: solo procesar estados que son realmente "perdida".
-// 3. Resolver o crear el paciente por número de teléfono.
-// 4. Verificar consentimiento RGPD del paciente.
-// 5. Registrar el AutomationRun para observabilidad.
-// 6. Registrar el evento en WebhookEvents para trazabilidad completa.
-// 7. [Stub] Encolar/enviar el WhatsApp de flow_00 → implementación en
-//    el sprint de integración con Twilio WhatsApp API.
+// SECUENCIA DE PASOS
+// ──────────────────
+// 1. Crear un DI scope por job (DbContext es Scoped).
+// 2. Filtrar: solo procesar estados realmente "perdida".
+// 3. Inicializar TenantContext con rol "service" para RLS.
+// 4. Registrar AutomationRun (observabilidad).
+// 5. Delegar en Flow01Orchestrator:
+//    · Idempotencia via IIdempotencyService.
+//    · Resolver/crear paciente.
+//    · Verificar consentimiento RGPD.
+//    · Enviar WhatsApp de recovery via IOutboundMessageSender.
+//    · Registrar métricas: missed_call_received, outbound_sent/failed.
+// 6. Actualizar AutomationRun como completed/skipped/failed.
 //
 // GARANTÍAS DE RESILIENCIA
 // ─────────────────────────
-// · Cada job se ejecuta en su propio scope → fallo de un job no afecta a otros.
-// · CancellationToken del host: el worker se detiene limpiamente en shutdown.
-// · Errores no propagados: se loguean y el worker continúa con el siguiente job.
-//   (El procesamiento ya fue marcado en processed_events; no hay re-entrega.)
-// · El DbContext recibe el tenant_id mediante TenantContext.Initialize para que
-//   el interceptor de RLS funcione correctamente.
-//
-// LO QUE NO HACE EL WORKER (deliberadamente)
-// ────────────────────────────────────────────
-// · NO envía WhatsApp (stub que se implementará en la feature de mensajería).
-// · NO confirma citas (la IA propone; el backend confirma en otro endpoint).
-// · NO actualiza el estado de la llamada en Twilio.
+// · Cada job en su propio scope → fallo de un job no afecta a otros.
+// · CancellationToken del host: el worker se detiene limpiamente.
+// · El event ya está en processed_events → no hay re-entrega de Twilio.
+// · Errores de Twilio: no propagan excepción; se registran en métricas.
 // ════════════════════════════════════════════════════════════════════════════
 
 /// <summary>
-/// Background service que ejecuta el flujo "flow_00 — Llamada perdida"
+/// Background service que ejecuta el flujo flow_01 (llamada perdida → WA recovery)
 /// consumiendo jobs de <see cref="IMissedCallJobQueue"/>.
 /// </summary>
 public sealed class MissedCallWorker : BackgroundService
 {
-    // Estados de Twilio que representan una llamada realmente perdida
     private static readonly HashSet<string> MissedCallStatuses =
         new(StringComparer.OrdinalIgnoreCase)
         {
@@ -54,9 +48,9 @@ public sealed class MissedCallWorker : BackgroundService
             "failed"
         };
 
-    private readonly IMissedCallJobQueue          _queue;
-    private readonly IServiceScopeFactory         _scopeFactory;
-    private readonly ILogger<MissedCallWorker>    _logger;
+    private readonly IMissedCallJobQueue       _queue;
+    private readonly IServiceScopeFactory      _scopeFactory;
+    private readonly ILogger<MissedCallWorker> _logger;
 
     public MissedCallWorker(
         IMissedCallJobQueue        queue,
@@ -68,24 +62,19 @@ public sealed class MissedCallWorker : BackgroundService
         _logger       = logger;
     }
 
-    /// <summary>
-    /// Loop principal: lee jobs del channel y los procesa uno a uno.
-    /// Se detiene limpiamente cuando <paramref name="stoppingToken"/> es cancelado.
-    /// </summary>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("[MissedCallWorker] Iniciado. Esperando jobs de flow_00.");
+        _logger.LogInformation("[MissedCallWorker] Iniciado. Esperando jobs de flow_01.");
 
         await foreach (var job in _queue.ReadAllAsync(stoppingToken))
         {
-            // Cada job en su propio try/catch: un fallo no detiene el worker.
             try
             {
                 using var _ = _logger.BeginScope(new Dictionary<string, object>
                 {
                     ["CallSid"]       = job.CallSid,
                     ["TenantId"]      = job.TenantId,
-                    ["CorrelationId"] = job.CorrelationId
+                    ["CorrelationId"] = job.CorrelationId,
                 });
 
                 await ProcessJobAsync(job, stoppingToken);
@@ -102,7 +91,6 @@ public sealed class MissedCallWorker : BackgroundService
                     "[MissedCallWorker] Error inesperado procesando job. " +
                     "CallSid={CallSid} TenantId={TenantId}",
                     job.CallSid, job.TenantId);
-                // Continuar con el siguiente job.
             }
         }
 
@@ -133,112 +121,71 @@ public sealed class MissedCallWorker : BackgroundService
         var sp  = scope.ServiceProvider;
         var db  = sp.GetRequiredService<AppDbContext>();
 
-        // Inicializar el TenantContext para que el interceptor RLS funcione.
-        // En el worker usamos rol "service" (no hay usuario humano).
         var tenantCtx = sp.GetRequiredService<TenantContext>();
         tenantCtx.Initialize(job.TenantId, TenantRole.Service, userId: null);
 
+        // ── AutomationRun (observabilidad) ────────────────────────────────────
         var run = new AutomationRun
         {
-            TenantId     = job.TenantId,
-            FlowId       = "flow_00",
-            TriggerType  = "event",
-            TriggerRef   = job.CallSid,
-            Status       = "running",
+            TenantId      = job.TenantId,
+            FlowId        = "flow_01",
+            TriggerType   = "event",
+            TriggerRef    = job.CallSid,
+            Status        = "running",
             CorrelationId = Guid.TryParse(job.CorrelationId, out var corrId)
                                 ? corrId
-                                : Guid.NewGuid()
+                                : Guid.NewGuid(),
         };
         db.AutomationRuns.Add(run);
         await db.SaveChangesAsync(ct);
 
         try
         {
-            // ── Paso 1: buscar/crear paciente por teléfono ────────────────────
-            var patient = await ResolveOrCreatePatientAsync(
-                db, job.TenantId, job.CallerPhone, ct);
+            // ── Delegar en Flow01Orchestrator ─────────────────────────────────
+            var orchestrator = sp.GetRequiredService<Flow01Orchestrator>();
 
-            // ── Paso 2: verificar consentimiento RGPD ─────────────────────────
-            if (!patient.RgpdConsent)
+            var result = await orchestrator.ExecuteAsync(
+                tenantId:       job.TenantId,
+                callSid:        job.CallSid,
+                callerPhone:    job.CallerPhone,
+                clinicPhone:    job.ClinicPhone,
+                callReceivedAt: job.ReceivedAt,
+                correlationId:  job.CorrelationId,
+                ct:             ct);
+
+            // ── Actualizar AutomationRun ──────────────────────────────────────
+            if (result.IsSuccess)
             {
+                run.ItemsProcessed = 1;
+                run.ItemsSucceeded = 1;
+                var status = result.FlowStep == "skipped" ? "skipped" : "completed";
+                await CompleteRunAsync(db, run, status, null, ct);
+
                 _logger.LogInformation(
-                    "[MissedCallWorker] Paciente sin consentimiento RGPD. " +
-                    "PatientId={PatientId} TenantId={TenantId}. " +
-                    "Se omite el envío de WhatsApp.",
-                    patient.Id, job.TenantId);
-
-                await CompleteRunAsync(db, run, "skipped",
-                    "Paciente sin consentimiento RGPD", ct);
-                return;
+                    "[MissedCallWorker] flow_01 {Status}. PatientId={PatientId} " +
+                    "ResponseTimeMs={Ms} TwilioSid={Sid}",
+                    status, result.PatientId, result.ResponseTimeMs, result.TwilioMessageSid);
             }
+            else
+            {
+                run.ItemsProcessed = 1;
+                run.ItemsFailed    = 1;
+                await CompleteRunAsync(db, run, "failed", result.ErrorMessage, ct);
 
-            // ── Paso 3: [STUB] Envío de WhatsApp flow_00 ──────────────────────
-            // TODO: implementar en la feature de mensajería.
-            // Aquí se llamaría a IWhatsAppSender.SendMissedCallFlowAsync(...)
-            // que construiría el mensaje de plantilla aprobada y lo enviaría
-            // a través del HttpClient de Twilio con resiliencia.
-            _logger.LogInformation(
-                "[MissedCallWorker] [STUB] Envío WhatsApp flow_00 pendiente de implementar. " +
-                "PatientId={PatientId} Phone={Phone} TenantId={TenantId}",
-                patient.Id, job.CallerPhone, job.TenantId);
-
-            // ── Actualizar run como completado ─────────────────────────────────
-            run.ItemsProcessed = 1;
-            run.ItemsSucceeded = 1;
-            await CompleteRunAsync(db, run, "completed", errorMessage: null, ct);
-
-            _logger.LogInformation(
-                "[MissedCallWorker] flow_00 completado. " +
-                "PatientId={PatientId} CallSid={CallSid}",
-                patient.Id, job.CallSid);
+                _logger.LogWarning(
+                    "[MissedCallWorker] flow_01 failed. PatientId={PatientId} " +
+                    "Step={Step} Error={Error}",
+                    result.PatientId, result.FlowStep, result.ErrorMessage);
+            }
         }
         catch (Exception ex)
         {
             run.ItemsFailed = 1;
             await CompleteRunAsync(db, run, "failed", ex.Message, ct);
-            throw; // re-throw para que el loop lo logueé con el contexto completo
+            throw;
         }
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Busca el paciente por teléfono dentro del tenant o lo crea como nuevo.
-    /// </summary>
-    private static async Task<Patient> ResolveOrCreatePatientAsync(
-        AppDbContext      db,
-        Guid              tenantId,
-        string            callerPhone,
-        CancellationToken ct)
-    {
-        var existing = await db.Patients
-            .FirstOrDefaultAsync(
-                p => p.TenantId == tenantId &&
-                     p.Phone    == callerPhone &&
-                     p.Status   != PatientStatus.Blocked,
-                ct);
-
-        if (existing is not null)
-            return existing;
-
-        // Crear paciente nuevo (sin nombre conocido aún)
-        var newPatient = new Patient
-        {
-            TenantId    = tenantId,
-            FullName    = $"Nuevo paciente ({callerPhone})",
-            Phone       = callerPhone,
-            Status      = PatientStatus.Active,
-            RgpdConsent = false   // se pide consentimiento en el flujo de WhatsApp
-        };
-        db.Patients.Add(newPatient);
-        await db.SaveChangesAsync(ct);
-
-        return newPatient;
-    }
-
-    /// <summary>
-    /// Marca el AutomationRun como finalizado con el estado dado.
-    /// </summary>
     private static async Task CompleteRunAsync(
         AppDbContext      db,
         AutomationRun     run,

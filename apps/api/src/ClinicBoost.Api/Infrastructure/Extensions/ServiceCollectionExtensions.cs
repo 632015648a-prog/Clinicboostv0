@@ -14,6 +14,7 @@ using ClinicBoost.Api.Features.Webhooks.WhatsApp.Status;
 using ClinicBoost.Api.Features.Agent;
 using ClinicBoost.Api.Features.Appointments;
 using ClinicBoost.Api.Features.Calendar;
+using ClinicBoost.Api.Features.Flow01;
 using FluentValidation;
 using System.Text;
 
@@ -286,6 +287,28 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
+    // Flow01: llamada perdida → WA recovery → reserva conversacional
+    public static IServiceCollection AddFlow01Feature(
+        this IServiceCollection services,
+        IConfiguration          config)
+    {
+        // Opciones de configuración
+        services
+            .AddOptions<Flow01Options>()
+            .Bind(config.GetSection(Flow01Options.SectionName));
+
+        // Métricas KPI (Scoped: depende de AppDbContext)
+        services.AddScoped<IFlowMetricsService, FlowMetricsService>();
+
+        // Sender de mensajes outbound (Scoped: depende de AppDbContext)
+        services.AddScoped<IOutboundMessageSender, TwilioOutboundMessageSender>();
+
+        // Orquestador del flujo (Scoped)
+        services.AddScoped<Flow01Orchestrator>();
+
+        return services;
+    }
+
     // Capa iCal read-only: caché persistida, freshness y fallback
     public static IServiceCollection AddCalendarFeature(
         this IServiceCollection services,
@@ -352,6 +375,7 @@ public static class ServiceCollectionExtensions
         services.AddConversationalAgentFeature();
         services.AddCalendarFeature(config);
         services.AddAppointmentsFeature();
+        services.AddFlow01Feature(config);
         return services;
     }
 }
@@ -374,6 +398,7 @@ public static class EndpointRouteBuilderExtensions
         app.MapWhatsAppInboundEndpoints();
         app.MapMessageStatusEndpoints();
         app.MapAppointmentEndpoints();
+        app.MapFlow01Endpoints();
         return app;
     }
 }
