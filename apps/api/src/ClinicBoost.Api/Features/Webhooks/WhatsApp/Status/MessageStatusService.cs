@@ -1,0 +1,189 @@
+using ClinicBoost.Api.Infrastructure.Database;
+using ClinicBoost.Domain.Conversations;
+using Microsoft.EntityFrameworkCore;
+
+namespace ClinicBoost.Api.Features.Webhooks.WhatsApp.Status;
+
+// ════════════════════════════════════════════════════════════════════════════
+// MessageStatusService
+//
+// Implementación de IMessageStatusService.
+//
+// FLUJO POR TRANSICIÓN DE ESTADO
+// ──────────────────────────────
+//  1. Buscar Message por (TenantId, ProviderMessageId = MessageSid).
+//     · Si no existe: crear el evento de entregabilidad con MessageId = null
+//       y retornar.  El mensaje puede haberse enviado por otra instancia o
+//       antes de que nuestra BD lo registrase.
+//
+//  2. Según el nuevo estado:
+//     · "sent"        → Message.Status = "sent",       SentAt = now
+//     · "delivered"   → Message.Status = "delivered",  DeliveredAt = now
+//     · "read"        → Message.Status = "read",       ReadAt = now
+//     · "failed"      → Message.Status = "failed",     ErrorCode/Msg
+//     · "undelivered" → Message.Status = "undelivered",ErrorCode/Msg
+//     Regla de no-regresión: no actualizar si el estado actual ya es
+//     posterior en el ciclo de vida (read > delivered > sent > pending).
+//
+//  3. Insertar MessageDeliveryEvent con:
+//     · Dimensiones: FlowId + TemplateId + MessageVariant del Message padre.
+//     · Timestamps del proveedor y de recepción en nuestro servidor.
+//
+//  4. Persistir todo en una sola llamada a SaveChangesAsync.
+//
+// NOTA DE DISEÑO — Acoplamiento con Message
+// ──────────────────────────────────────────
+// Message tiene campos mutables (Status, SentAt, DeliveredAt, ReadAt,
+// ErrorCode, ErrorMessage) para soportar los callbacks de Twilio.
+// El servicio es el único punto que los actualiza, preservando la
+// inmutabilidad del resto de campos (Body, Direction, Channel, etc.).
+// ════════════════════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Implementación de <see cref="IMessageStatusService"/>.
+/// Registrar como <b>Scoped</b>.
+/// </summary>
+public sealed class MessageStatusService : IMessageStatusService
+{
+    // Orden de ciclo de vida: índice más alto = estado más avanzado.
+    // Un estado nunca puede retroceder en el ciclo.
+    private static readonly Dictionary<string, int> StatusOrder =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["pending"]     = 0,
+            ["sent"]        = 1,
+            ["delivered"]   = 2,
+            ["read"]        = 3,
+            ["failed"]      = 10,   // terminal; no compite con el ciclo normal
+            ["undelivered"] = 10,   // terminal
+        };
+
+    private readonly AppDbContext                   _db;
+    private readonly ILogger<MessageStatusService>  _logger;
+
+    public MessageStatusService(
+        AppDbContext                  db,
+        ILogger<MessageStatusService> logger)
+    {
+        _db     = db;
+        _logger = logger;
+    }
+
+    /// <inheritdoc/>
+    public async Task ProcessAsync(
+        Guid                       tenantId,
+        TwilioMessageStatusRequest request,
+        CancellationToken          ct = default)
+    {
+        var now = DateTimeOffset.UtcNow;
+
+        // ── 1. Buscar Message por ProviderMessageId ───────────────────────────
+        var message = await _db.Messages
+            .FirstOrDefaultAsync(
+                m => m.TenantId          == tenantId &&
+                     m.ProviderMessageId == request.MessageSid,
+                ct);
+
+        if (message is null)
+        {
+            _logger.LogWarning(
+                "[MsgStatus] Message no encontrado en BD para MessageSid={Sid} " +
+                "TenantId={TenantId}. Se registra el evento sin MessageId.",
+                request.MessageSid, tenantId);
+        }
+
+        // ── 2. Actualizar Message si se encontró ──────────────────────────────
+        if (message is not null)
+        {
+            ApplyStatusTransition(message, request, now);
+        }
+
+        // ── 3. Insertar MessageDeliveryEvent ──────────────────────────────────
+        var deliveryEvent = new MessageDeliveryEvent
+        {
+            TenantId          = tenantId,
+            MessageId         = message?.Id,
+            ConversationId    = message?.ConversationId,
+            ProviderMessageId = request.MessageSid,
+            Status            = request.MessageStatus,
+            // Dimensiones de agrupación extraídas del Message padre.
+            // Null cuando el Message no existe en nuestra BD.
+            FlowId            = null,        // TODO: añadir FlowId a Message en sprint de plantillas
+            TemplateId        = message?.TemplateId,
+            MessageVariant    = null,        // TODO: añadir MessageVariant a Message en sprint A/B
+            Channel           = request.Channel,
+            ErrorCode         = request.ErrorCode,
+            ErrorMessage      = request.ErrorMessage,
+            ProviderTimestamp = request.ProviderTimestamp,
+            OccurredAt        = now,
+        };
+
+        _db.MessageDeliveryEvents.Add(deliveryEvent);
+        await _db.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "[MsgStatus] Evento de entregabilidad registrado. " +
+            "MessageSid={Sid} Status={Status} MessageId={MsgId} " +
+            "TenantId={TenantId} DeliveryEventId={EventId}",
+            request.MessageSid, request.MessageStatus,
+            message?.Id, tenantId, deliveryEvent.Id);
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Aplica la transición de estado al Message respetando la regla de no-regresión:
+    /// el estado nunca puede retroceder en el ciclo de vida del mensaje.
+    /// </summary>
+    private void ApplyStatusTransition(
+        Message                    message,
+        TwilioMessageStatusRequest request,
+        DateTimeOffset             now)
+    {
+        var currentOrder = StatusOrder.GetValueOrDefault(message.Status, 0);
+        var newOrder     = StatusOrder.GetValueOrDefault(request.MessageStatus, 0);
+
+        // Los estados terminales (failed/undelivered) siempre se aplican.
+        // El ciclo normal no retrocede (read no puede volver a delivered).
+        bool isTerminal = request.IsFailure;
+        bool isProgression = newOrder > currentOrder;
+
+        if (!isTerminal && !isProgression)
+        {
+            _logger.LogDebug(
+                "[MsgStatus] No-regresión: ignorando transición {Current}→{New} " +
+                "para MessageSid={Sid}.",
+                message.Status, request.MessageStatus, request.MessageSid);
+            return;
+        }
+
+        var previousStatus = message.Status;
+        message.Status = request.MessageStatus;
+
+        switch (request.MessageStatus)
+        {
+            case "sent":
+                message.SentAt      = now;
+                break;
+            case "delivered":
+                message.SentAt    ??= now;   // garantizar que SentAt tiene valor
+                message.DeliveredAt = now;
+                break;
+            case "read":
+                message.SentAt    ??= now;
+                message.DeliveredAt ??= now; // puede llegar read sin delivered previo
+                message.ReadAt      = now;
+                break;
+            case "failed":
+            case "undelivered":
+                message.ErrorCode    = request.ErrorCode;
+                message.ErrorMessage = request.ErrorMessage;
+                break;
+        }
+
+        _logger.LogInformation(
+            "[MsgStatus] Message actualizado. " +
+            "MessageSid={Sid} {Prev}→{New} MessageId={MsgId}",
+            request.MessageSid, previousStatus, request.MessageStatus, message.Id);
+    }
+}

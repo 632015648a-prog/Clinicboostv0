@@ -39,8 +39,9 @@ public sealed class AppDbContext : DbContext
     public DbSet<WaitlistEntry>       WaitlistEntries     => Set<WaitlistEntry>();
 
     // ─── Conversaciones ───────────────────────────────────────────────────────
-    public DbSet<Conversation>        Conversations       => Set<Conversation>();
-    public DbSet<Message>             Messages            => Set<Message>();
+    public DbSet<Conversation>        Conversations         => Set<Conversation>();
+    public DbSet<Message>             Messages              => Set<Message>();
+    public DbSet<MessageDeliveryEvent> MessageDeliveryEvents => Set<MessageDeliveryEvent>();
 
     // ─── Automatización ───────────────────────────────────────────────────────
     public DbSet<RuleConfig>          RuleConfigs         => Set<RuleConfig>();
@@ -218,6 +219,36 @@ public sealed class AppDbContext : DbContext
             // duration_ms es columna generada en Postgres; se ignora en EF para evitar conflictos
             e.Ignore(x => x.DurationMs);
             e.Property(x => x.CreatedAt).HasColumnName("created_at");
+        });
+
+        // MessageDeliveryEvent — inmutable, INSERT-only, agrupable
+        model.Entity<MessageDeliveryEvent>(e =>
+        {
+            e.ToTable("message_delivery_events");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
+            e.Property(x => x.MessageId).HasColumnName("message_id");
+            e.Property(x => x.ConversationId).HasColumnName("conversation_id");
+            e.Property(x => x.ProviderMessageId).HasColumnName("provider_message_id")
+             .IsRequired().HasMaxLength(64);
+            e.Property(x => x.Status).HasColumnName("status").IsRequired()
+             .HasMaxLength(32);
+            e.Property(x => x.FlowId).HasColumnName("flow_id").HasMaxLength(32);
+            e.Property(x => x.TemplateId).HasColumnName("template_id").HasMaxLength(128);
+            e.Property(x => x.MessageVariant).HasColumnName("message_variant")
+             .HasMaxLength(16);
+            e.Property(x => x.Channel).HasColumnName("channel").IsRequired()
+             .HasMaxLength(32);
+            e.Property(x => x.ErrorCode).HasColumnName("error_code").HasMaxLength(16);
+            e.Property(x => x.ErrorMessage).HasColumnName("error_message");
+            e.Property(x => x.ProviderTimestamp).HasColumnName("provider_timestamp");
+            e.Property(x => x.OccurredAt).HasColumnName("occurred_at");
+
+            // Índice principal para queries de deduplicación
+            // (provider_message_id + status = clave lógica de unicidad por transición)
+            e.HasIndex(x => new { x.TenantId, x.ProviderMessageId, x.Status })
+             .HasDatabaseName("ix_mde_tenant_sid_status");
         });
 
         // WebhookEvent — tenant_id nullable

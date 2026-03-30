@@ -10,6 +10,7 @@ using ClinicBoost.Api.Infrastructure.Middleware;
 using ClinicBoost.Api.Infrastructure.Twilio;
 using ClinicBoost.Api.Features.Webhooks.Voice.MissedCall;
 using ClinicBoost.Api.Features.Webhooks.WhatsApp.Inbound;
+using ClinicBoost.Api.Features.Webhooks.WhatsApp.Status;
 using System.Text;
 
 namespace ClinicBoost.Api.Infrastructure.Extensions;
@@ -241,6 +242,14 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
+    // WhatsApp message-status callbacks
+    public static IServiceCollection AddMessageStatusFeature(
+        this IServiceCollection services)
+    {
+        services.AddScoped<IMessageStatusService, MessageStatusService>();
+        return services;
+    }
+
     // WhatsApp inbound: Cola + Worker + ConversationService
     public static IServiceCollection AddWhatsAppInboundFeature(
         this IServiceCollection services)
@@ -266,6 +275,7 @@ public static class ServiceCollectionExtensions
         services.AddTwilioServices(config);
         services.AddMissedCallFeature();
         services.AddWhatsAppInboundFeature();
+        services.AddMessageStatusFeature();
         return services;
     }
 }
@@ -286,6 +296,7 @@ public static class EndpointRouteBuilderExtensions
     {
         app.MapMissedCallEndpoints();
         app.MapWhatsAppInboundEndpoints();
+        app.MapMessageStatusEndpoints();
         return app;
     }
 }
