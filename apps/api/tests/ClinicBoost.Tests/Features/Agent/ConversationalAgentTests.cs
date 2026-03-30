@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using ClinicBoost.Api.Features.Agent;
+using ClinicBoost.Api.Features.Calendar;
 using ClinicBoost.Api.Infrastructure.Database;
 using ClinicBoost.Domain.Conversations;
 using FluentAssertions;
@@ -57,7 +58,8 @@ public sealed class ConversationalAgentTests
 
         var classifier = new IntentClassifier(httpFactory, NullLogger<IntentClassifier>.Instance);
         var prompt     = new SystemPromptBuilder();
-        var tools      = new ToolRegistry(db, NullLogger<ToolRegistry>.Instance);
+        var calendarService = Substitute.For<ICalendarService>();
+        var tools      = new ToolRegistry(db, calendarService, NullLogger<ToolRegistry>.Instance);
         var guard      = new HardLimitGuard(NullLogger<HardLimitGuard>.Instance);
 
         return new ConversationalAgent(

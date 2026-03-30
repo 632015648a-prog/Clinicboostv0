@@ -1,4 +1,5 @@
 using ClinicBoost.Api.Features.Agent;
+using ClinicBoost.Api.Features.Calendar;
 using Microsoft.EntityFrameworkCore;
 using ClinicBoost.Domain.Tenants;
 using ClinicBoost.Domain.Appointments;
@@ -57,6 +58,9 @@ public sealed class AppDbContext : DbContext
 
     // ─── Agente conversacional ───────────────────────────────────────────────
     public DbSet<AgentTurn>           AgentTurns          => Set<AgentTurn>();
+
+    // ─── Caché de calendarios iCal ────────────────────────────────────────────
+    public DbSet<CalendarCache>       CalendarCaches      => Set<CalendarCache>();
 
     // ─── Auditoría ────────────────────────────────────────────────────────────
     public DbSet<AuditLog>            AuditLogs           => Set<AuditLog>();
@@ -278,6 +282,35 @@ public sealed class AppDbContext : DbContext
             e.Property(x => x.OccurredAt).HasColumnName("occurred_at");
             e.HasIndex(x => new { x.TenantId, x.ConversationId, x.OccurredAt })
              .HasDatabaseName("ix_agent_turns_conv");
+        });
+
+        // CalendarCache — caché persistida de feeds iCal
+        model.Entity<CalendarCache>(e =>
+        {
+            e.ToTable("calendar_cache");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
+            e.Property(x => x.ConnectionId).HasColumnName("connection_id").IsRequired();
+            e.Property(x => x.SlotsJson).HasColumnName("slots_json")
+             .HasColumnType("jsonb").IsRequired();
+            e.Property(x => x.FetchedAtUtc).HasColumnName("fetched_at_utc");
+            e.Property(x => x.ExpiresAtUtc).HasColumnName("expires_at_utc");
+            e.Property(x => x.ETag).HasColumnName("etag").HasMaxLength(255);
+            e.Property(x => x.LastModifiedUtc).HasColumnName("last_modified_utc");
+            e.Property(x => x.ContentHash).HasColumnName("content_hash").HasMaxLength(64);
+            e.Property(x => x.LastErrorMessage).HasColumnName("last_error_message");
+            e.Property(x => x.CreatedAt).HasColumnName("created_at");
+            e.Property(x => x.UpdatedAt).HasColumnName("updated_at");
+
+            // Unicidad: una entrada por (tenant, connection)
+            e.HasIndex(x => new { x.TenantId, x.ConnectionId })
+             .IsUnique()
+             .HasDatabaseName("uq_calendar_cache_tenant_connection");
+
+            // Índice para expiración pasiva (job de limpieza)
+            e.HasIndex(x => x.ExpiresAtUtc)
+             .HasDatabaseName("ix_calendar_cache_expires_at");
         });
 
         // WebhookEvent — tenant_id nullable

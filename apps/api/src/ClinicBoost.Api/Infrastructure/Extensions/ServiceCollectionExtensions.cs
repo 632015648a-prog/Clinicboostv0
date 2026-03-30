@@ -13,6 +13,7 @@ using ClinicBoost.Api.Features.Webhooks.WhatsApp.Inbound;
 using ClinicBoost.Api.Features.Webhooks.WhatsApp.Status;
 using ClinicBoost.Api.Features.Agent;
 using ClinicBoost.Api.Features.Appointments;
+using ClinicBoost.Api.Features.Calendar;
 using FluentValidation;
 using System.Text;
 
@@ -285,6 +286,43 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
+    // Capa iCal read-only: caché persistida, freshness y fallback
+    public static IServiceCollection AddCalendarFeature(
+        this IServiceCollection services,
+        IConfiguration          config)
+    {
+        // Opciones de configuración (sección "ICalOptions" en appsettings)
+        services
+            .AddOptions<ICalOptions>()
+            .Bind(config.GetSection(ICalOptions.SectionName));
+
+        // HttpClient dedicado para feeds iCal con resiliencia básica
+        services.AddHttpClient("ICalReader", c =>
+            {
+                c.DefaultRequestHeaders.Add("User-Agent", "ClinicBoost/1.0 (iCal reader)");
+            })
+            .AddStandardResilienceHandler(opts =>
+            {
+                // Reintentos: 2 intentos extra, solo en errores transitorios
+                opts.Retry.MaxRetryAttempts   = 2;
+                opts.Retry.Delay              = TimeSpan.FromSeconds(1);
+
+                // Timeout total: debe ser >= ICalOptions.HttpTimeout + margen
+                opts.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(30);
+            });
+
+        // IICalReader: parsea feeds .ics (Singleton — sin estado mutable)
+        services.AddSingleton<IICalReader, HttpICalReader>();
+
+        // ICalendarCacheStore: persiste la caché en Postgres via EF (Scoped)
+        services.AddScoped<ICalendarCacheStore, EfCalendarCacheStore>();
+
+        // ICalendarService: orquestador cache-aside + freshness + fallback (Scoped)
+        services.AddScoped<ICalendarService, CalendarService>();
+
+        return services;
+    }
+
     // Gestión de citas: slots, reserva, cancelación y reprogramación
     public static IServiceCollection AddAppointmentsFeature(
         this IServiceCollection services)
@@ -312,6 +350,7 @@ public static class ServiceCollectionExtensions
         services.AddWhatsAppInboundFeature();
         services.AddMessageStatusFeature();
         services.AddConversationalAgentFeature();
+        services.AddCalendarFeature(config);
         services.AddAppointmentsFeature();
         return services;
     }

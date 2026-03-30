@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using ClinicBoost.Api.Features.Calendar;
 using ClinicBoost.Api.Infrastructure.Database;
 using ClinicBoost.Domain.Appointments;
 using Microsoft.EntityFrameworkCore;
@@ -29,7 +30,7 @@ namespace ClinicBoost.Api.Features.Agent;
 //
 // REGISTRO
 // ────────
-// Registrar como Scoped (depende de AppDbContext).
+// Registrar como Scoped (depende de AppDbContext e ICalendarService).
 // ════════════════════════════════════════════════════════════════════════════
 
 /// <summary>
@@ -39,14 +40,17 @@ namespace ClinicBoost.Api.Features.Agent;
 public sealed class ToolRegistry
 {
     private readonly AppDbContext            _db;
-    private readonly ILogger<ToolRegistry>  _logger;
+    private readonly ICalendarService        _calendarService;
+    private readonly ILogger<ToolRegistry>   _logger;
 
     public ToolRegistry(
-        AppDbContext           db,
-        ILogger<ToolRegistry>  logger)
+        AppDbContext            db,
+        ICalendarService        calendarService,
+        ILogger<ToolRegistry>   logger)
     {
-        _db     = db;
-        _logger = logger;
+        _db              = db;
+        _calendarService = calendarService;
+        _logger          = logger;
     }
 
     // ── Definiciones (enviadas a OpenAI en cada turno) ────────────────────
@@ -254,36 +258,130 @@ public sealed class ToolRegistry
     private async Task<ToolExecutionResult> GetAvailableSlotsAsync(
         string argsJson, AgentContext ctx, CancellationToken ct)
     {
-        // En este sprint devolvemos slots simulados.
-        // La integración real con el calendario (Google/iCal) va en el sprint de calendario.
+        // Implementación real: usa ICalendarService (cache-aside persistida + fallback).
+        // El agente recibe los slots ocupados del calendario iCal del terapeuta;
+        // la disponibilidad se calcula filtrando bloques ocupados (IsOpaque = true).
         try
         {
-            var args      = JsonDocument.Parse(argsJson).RootElement;
-            var dateFrom  = DateTimeOffset.Parse(
-                args.GetProperty("date_from").GetString()!);
+            var args        = JsonDocument.Parse(argsJson).RootElement;
+            var dateFromArg = args.GetProperty("date_from").GetString()!;
+            var dateFrom    = DateTimeOffset.Parse(dateFromArg).ToUniversalTime();
             var durationMin = args.TryGetProperty("duration_min", out var dp) ? dp.GetInt32() : 60;
+            var dateTo      = dateFrom.AddDays(7);
 
-            // Stub: genera 3 slots a partir de date_from
-            var slots = Enumerable.Range(0, 3).Select(i => new
+            // Obtener la conexión iCal activa del tenant
+            var connection = await _db.CalendarConnections
+                .AsNoTracking()
+                .Where(c => c.TenantId == ctx.TenantId && c.IsActive &&
+                            c.Provider == "ical" && c.IcalUrl != null)
+                .OrderByDescending(c => c.IsPrimary)
+                .FirstOrDefaultAsync(ct);
+
+            if (connection is null)
             {
-                starts_at_utc = dateFrom.AddDays(i).AddHours(9).ToString("O"),
-                ends_at_utc   = dateFrom.AddDays(i).AddHours(9)
-                                        .AddMinutes(durationMin).ToString("O"),
-                therapist     = "Disponible",
-                available     = true,
-            }).ToList();
+                // Sin conexión iCal configurada: devolvemos respuesta informativa
+                _logger.LogInformation(
+                    "[ToolRegistry] Sin CalendarConnection iCal para TenantId={TenantId}",
+                    ctx.TenantId);
+                return ToolExecutionResult.Ok(JsonSerializer.Serialize(new
+                {
+                    slots            = Array.Empty<object>(),
+                    calendar_status  = "no_connection",
+                    message          = "No hay calendario iCal configurado para este tenant.",
+                }));
+            }
+
+            // Consultar el calendario (cache-aside persistida)
+            var result = await _calendarService.GetSlotsAsync(ctx.TenantId, connection.Id, ct);
+
+            if (result.Status == CalendarCacheStatus.Unavailable)
+            {
+                _logger.LogWarning(
+                    "[ToolRegistry] Calendario no disponible. TenantId={TenantId} Error={Error}",
+                    ctx.TenantId, result.ErrorMessage);
+                return ToolExecutionResult.Ok(JsonSerializer.Serialize(new
+                {
+                    slots            = Array.Empty<object>(),
+                    calendar_status  = "unavailable",
+                    message          = "El calendario no está disponible temporalmente.",
+                }));
+            }
+
+            // Filtrar slots ocupados en el rango solicitado
+            var busySlots = result.Slots
+                .Where(s => s.IsOpaque &&
+                            s.StartsAtUtc < dateTo &&
+                            s.EndsAtUtc   > dateFrom)
+                .ToList();
+
+            // Generar huecos libres entre los bloques ocupados
+            var freeSlots = ComputeFreeSlots(
+                dateFrom, dateTo, busySlots, TimeSpan.FromMinutes(durationMin));
 
             _logger.LogInformation(
-                "[ToolRegistry] get_available_slots stub devuelto. TenantId={TenantId}",
-                ctx.TenantId);
+                "[ToolRegistry] get_available_slots. TenantId={TenantId} " +
+                "CalendarStatus={Status} BusyCount={Busy} FreeCount={Free}",
+                ctx.TenantId, result.Status, busySlots.Count, freeSlots.Count);
 
-            return ToolExecutionResult.Ok(JsonSerializer.Serialize(new { slots }));
+            return ToolExecutionResult.Ok(JsonSerializer.Serialize(new
+            {
+                slots            = freeSlots,
+                calendar_status  = result.Status.ToString().ToLowerInvariant(),
+                fetched_at_utc   = result.FetchedAtUtc,
+                is_stale         = result.Status == CalendarCacheStatus.Stale,
+            }));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "[ToolRegistry] Error en get_available_slots.");
             return ToolExecutionResult.Error("Error al consultar disponibilidad.");
         }
+    }
+
+    // ── Cálculo de huecos libres ──────────────────────────────────────────────
+
+    /// <summary>
+    /// Dado un rango y una lista de bloques ocupados, calcula los huecos
+    /// de al menos <paramref name="slotDuration"/> de duración.
+    /// Asume slots ordenados por StartsAtUtc.
+    /// </summary>
+    private static IReadOnlyList<object> ComputeFreeSlots(
+        DateTimeOffset          from,
+        DateTimeOffset          to,
+        IReadOnlyList<ICalSlot> busySlots,
+        TimeSpan                slotDuration)
+    {
+        var result  = new List<object>();
+        var cursor  = from;
+
+        foreach (var busy in busySlots.OrderBy(s => s.StartsAtUtc))
+        {
+            if (busy.StartsAtUtc > cursor && (busy.StartsAtUtc - cursor) >= slotDuration)
+            {
+                result.Add(new
+                {
+                    starts_at_utc = cursor.ToString("O"),
+                    ends_at_utc   = busy.StartsAtUtc.ToString("O"),
+                    available     = true,
+                });
+            }
+
+            if (busy.EndsAtUtc > cursor)
+                cursor = busy.EndsAtUtc;
+        }
+
+        // Hueco final (después del último bloque ocupado)
+        if (cursor < to && (to - cursor) >= slotDuration)
+        {
+            result.Add(new
+            {
+                starts_at_utc = cursor.ToString("O"),
+                ends_at_utc   = to.ToString("O"),
+                available     = true,
+            });
+        }
+
+        return result;
     }
 
     private static ToolExecutionResult ParseAndBuildProposal(
