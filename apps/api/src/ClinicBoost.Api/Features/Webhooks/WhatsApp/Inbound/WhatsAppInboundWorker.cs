@@ -1,6 +1,8 @@
+using ClinicBoost.Api.Features.Agent;
 using ClinicBoost.Api.Infrastructure.Database;
 using ClinicBoost.Api.Infrastructure.Tenants;
 using ClinicBoost.Domain.Automation;
+using ClinicBoost.Domain.Conversations;
 using ClinicBoost.Domain.Patients;
 using Microsoft.EntityFrameworkCore;
 
@@ -181,16 +183,69 @@ public sealed class WhatsAppInboundWorker : BackgroundService
                 return;
             }
 
-            // ── 7. [Stub] Enrutar al agente conversacional ────────────────────
-            // TODO: implementar en el sprint de integración IA.
-            // Aquí se invocaría a IConversationalAgent.HandleInboundAsync(...)
-            // que leerá el AiContext de la conversation, llamará a OpenAI/Claude
-            // y encolaría la respuesta para envío por Twilio.
+            // ── 7. Enrutar al agente conversacional ───────────────────────────
+            var agent = sp.GetRequiredService<IConversationalAgent>();
+
+            var recentMessages = await db.Messages
+                .Where(m => m.ConversationId == conversation.Id)
+                .OrderByDescending(m => m.CreatedAt)
+                .Take(15)
+                .OrderBy(m => m.CreatedAt)
+                .ToListAsync(ct);
+
+            var discountRule = await db.RuleConfigs
+                .Where(r => r.TenantId == job.TenantId &&
+                             r.FlowId  == "global"      &&
+                             r.RuleKey == "discount_max_pct" &&
+                             r.IsActive)
+                .FirstOrDefaultAsync(ct);
+            var discountMaxPct = discountRule is not null
+                && decimal.TryParse(discountRule.RuleValue,
+                       System.Globalization.NumberStyles.Number,
+                       System.Globalization.CultureInfo.InvariantCulture,
+                       out var d) ? d : 0m;
+
+            var tenantEntity = await db.Tenants.FindAsync([job.TenantId], ct);
+
+            var agentCtx = new AgentContext
+            {
+                TenantId              = job.TenantId,
+                PatientId             = patient.Id,
+                ConversationId        = conversation.Id,
+                CorrelationId         = job.CorrelationId,
+                MessageSid            = job.MessageSid,
+                InboundText           = job.Body ?? string.Empty,
+                MediaUrl              = job.MediaUrl,
+                PatientName           = patient.FullName,
+                PatientPhone          = patient.Phone,
+                RgpdConsent           = patient.RgpdConsent,
+                ConversationStatus    = conversation.Status,
+                AiContextJson         = conversation.AiContext,
+                IsInsideSessionWindow = conversation.SessionExpiresAt.HasValue &&
+                                        conversation.SessionExpiresAt.Value > DateTimeOffset.UtcNow,
+                RecentMessages        = recentMessages,
+                DiscountMaxPct        = discountMaxPct,
+                ClinicName            = tenantEntity?.Name ?? "la clínica",
+                LanguageCode          = "es",
+            };
+
+            var agentResult = await agent.HandleAsync(agentCtx, ct);
+
+            // Actualizar AiContext y estado de conversación
+            conversation.AiContext = agentResult.UpdatedAiContextJson;
+            if (agentResult.Action == AgentAction.EscalateToHuman)
+                conversation.Status = "waiting_human";
+            else if (agentResult.Action == AgentAction.Resolve)
+                conversation.Status = "resolved";
+            await db.SaveChangesAsync(ct);
+
             _logger.LogInformation(
-                "[WAWorker] [STUB] Enrutado al agente IA pendiente de implementar. " +
-                "ConvId={ConvId} PatientId={PatientId} " +
-                "MessageSid={Sid} TenantId={TenantId}",
-                conversation.Id, patient.Id, job.MessageSid, job.TenantId);
+                "[WAWorker] Agente completado. Action={Action} WasBlocked={Blocked} " +
+                "ConvId={ConvId} PatientId={PatientId} MessageSid={Sid}",
+                agentResult.Action, agentResult.WasBlocked,
+                conversation.Id, patient.Id, job.MessageSid);
+
+            // TODO (sprint envío): encolar respuesta para Twilio si Action == SendMessage.
 
             // ── 8. Completar AutomationRun ────────────────────────────────────
             run.ItemsProcessed = 1;

@@ -11,6 +11,7 @@ using ClinicBoost.Api.Infrastructure.Twilio;
 using ClinicBoost.Api.Features.Webhooks.Voice.MissedCall;
 using ClinicBoost.Api.Features.Webhooks.WhatsApp.Inbound;
 using ClinicBoost.Api.Features.Webhooks.WhatsApp.Status;
+using ClinicBoost.Api.Features.Agent;
 using System.Text;
 
 namespace ClinicBoost.Api.Infrastructure.Extensions;
@@ -266,6 +267,22 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
+    // Agente conversacional IA
+    public static IServiceCollection AddConversationalAgentFeature(
+        this IServiceCollection services)
+    {
+        // Singleton: sin estado mutable, compartible entre scopes
+        services.AddSingleton<SystemPromptBuilder>();
+        services.AddSingleton<HardLimitGuard>();
+
+        // Scoped: dependen de AppDbContext (Scoped)
+        services.AddScoped<IntentClassifier>();
+        services.AddScoped<ToolRegistry>();
+        services.AddScoped<IConversationalAgent, ConversationalAgent>();
+
+        return services;
+    }
+
     // Feature services aggregator
     public static IServiceCollection AddFeatureServices(
         this IServiceCollection services,
@@ -276,6 +293,7 @@ public static class ServiceCollectionExtensions
         services.AddMissedCallFeature();
         services.AddWhatsAppInboundFeature();
         services.AddMessageStatusFeature();
+        services.AddConversationalAgentFeature();
         return services;
     }
 }

@@ -1,3 +1,4 @@
+using ClinicBoost.Api.Features.Agent;
 using Microsoft.EntityFrameworkCore;
 using ClinicBoost.Domain.Tenants;
 using ClinicBoost.Domain.Appointments;
@@ -53,6 +54,9 @@ public sealed class AppDbContext : DbContext
     // ─── Webhooks e idempotencia ──────────────────────────────────────────────
     public DbSet<WebhookEvent>        WebhookEvents       => Set<WebhookEvent>();
     public DbSet<ProcessedEvent>      ProcessedEvents     => Set<ProcessedEvent>();
+
+    // ─── Agente conversacional ───────────────────────────────────────────────
+    public DbSet<AgentTurn>           AgentTurns          => Set<AgentTurn>();
 
     // ─── Auditoría ────────────────────────────────────────────────────────────
     public DbSet<AuditLog>            AuditLogs           => Set<AuditLog>();
@@ -249,6 +253,31 @@ public sealed class AppDbContext : DbContext
             // (provider_message_id + status = clave lógica de unicidad por transición)
             e.HasIndex(x => new { x.TenantId, x.ProviderMessageId, x.Status })
              .HasDatabaseName("ix_mde_tenant_sid_status");
+        });
+
+        // AgentTurn — INSERT-only, observabilidad del agente conversacional
+        model.Entity<AgentTurn>(e =>
+        {
+            e.ToTable("agent_turns");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
+            e.Property(x => x.ConversationId).HasColumnName("conversation_id").IsRequired();
+            e.Property(x => x.MessageId).HasColumnName("message_id");
+            e.Property(x => x.IntentName).HasColumnName("intent_name").IsRequired().HasMaxLength(64);
+            e.Property(x => x.IntentConfidence).HasColumnName("intent_confidence");
+            e.Property(x => x.ActionName).HasColumnName("action_name").IsRequired().HasMaxLength(64);
+            e.Property(x => x.ResponseText).HasColumnName("response_text");
+            e.Property(x => x.EscalationReason).HasColumnName("escalation_reason");
+            e.Property(x => x.WasBlocked).HasColumnName("was_blocked");
+            e.Property(x => x.BlockReason).HasColumnName("block_reason");
+            e.Property(x => x.ModelUsed).HasColumnName("model_used").IsRequired().HasMaxLength(64);
+            e.Property(x => x.PromptTokens).HasColumnName("prompt_tokens");
+            e.Property(x => x.CompletionTokens).HasColumnName("completion_tokens");
+            e.Property(x => x.CorrelationId).HasColumnName("correlation_id").IsRequired();
+            e.Property(x => x.OccurredAt).HasColumnName("occurred_at");
+            e.HasIndex(x => new { x.TenantId, x.ConversationId, x.OccurredAt })
+             .HasDatabaseName("ix_agent_turns_conv");
         });
 
         // WebhookEvent — tenant_id nullable
