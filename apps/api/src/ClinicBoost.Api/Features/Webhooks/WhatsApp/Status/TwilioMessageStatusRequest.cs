@@ -84,11 +84,13 @@ public sealed record TwilioMessageStatusRequest
         MessageStatus is "read";
 
     /// <summary>
-    /// Canal detectado a partir del prefijo del número (To o From).
-    /// "whatsapp" cuando alguno tiene prefijo "whatsapp:", "sms" en caso contrario.
+    /// Canal detectado a partir del prefijo del número <c>From</c>.
+    /// Twilio incluye el prefijo "whatsapp:" en los callbacks de WhatsApp;
+    /// si <c>From</c> no lo tiene, se trata como SMS.
+    /// Se usa únicamente <c>From</c> —el origen del mensaje— para la detección,
+    /// ya que <c>To</c> puede incluir el prefijo incluso en callbacks SMS mixtos.
     /// </summary>
     public string Channel =>
-        To.StartsWith("whatsapp:", StringComparison.OrdinalIgnoreCase) ||
         From.StartsWith("whatsapp:", StringComparison.OrdinalIgnoreCase)
             ? "whatsapp"
             : "sms";

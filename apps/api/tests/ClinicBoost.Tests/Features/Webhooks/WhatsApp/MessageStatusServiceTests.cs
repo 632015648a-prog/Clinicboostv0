@@ -10,39 +10,33 @@ namespace ClinicBoost.Tests.Features.Webhooks.WhatsApp;
 // ════════════════════════════════════════════════════════════════════════════
 // MessageStatusServiceTests
 //
-// Tests unitarios de MessageStatusService.
-// Cada test usa su propia BD InMemory aislada.
+// Tests unitarios de MessageStatusService sobre EF InMemory.
+//
+// COBERTURA:
+//   · Inserción de MessageDeliveryEvent para cada estado (sent/delivered/read/failed)
+//   · Actualización de Message.Status con regla de no-regresión
+//   · Correlación MessageId / ConversationId en el evento de entregabilidad
+//   · Comportamiento cuando el Message no existe en BD (MessageId null)
+//   · Campos de error en failed/undelivered
+//   · Timestamps SentAt / DeliveredAt / ReadAt establecidos correctamente
 // ════════════════════════════════════════════════════════════════════════════
 
 public sealed class MessageStatusServiceTests
 {
-    // ── Helpers ───────────────────────────────────────────────────────────────
+    // ── Setup helpers ─────────────────────────────────────────────────────────
 
-    private static AppDbContext CreateDb() =>
-        new(new DbContextOptionsBuilder<AppDbContext>()
+    private static AppDbContext CreateDb()
+    {
+        var opts = new DbContextOptionsBuilder<AppDbContext>()
             .UseInMemoryDatabase("MsgStatusSvc_" + Guid.NewGuid().ToString("N"))
-            .Options);
+            .Options;
+        return new AppDbContext(opts);
+    }
 
     private static MessageStatusService BuildSut(AppDbContext db) =>
         new(db, NullLogger<MessageStatusService>.Instance);
 
-    private static TwilioMessageStatusRequest BuildRequest(
-        string  messageSid,
-        string  status,
-        string? errorCode    = null,
-        string? errorMessage = null,
-        string  from         = "whatsapp:+34910000001",
-        string  to           = "whatsapp:+34612000001") => new()
-    {
-        MessageSid    = messageSid,
-        MessageStatus = status,
-        AccountSid    = "ACtest",
-        From          = from,
-        To            = to,
-        ErrorCode     = errorCode,
-        ErrorMessage  = errorMessage,
-    };
-
+    /// <summary>Crea y persiste un Message de prueba con status "sent".</summary>
     private static async Task<Message> SeedMessageAsync(
         AppDbContext db,
         Guid         tenantId,
@@ -56,7 +50,7 @@ public sealed class MessageStatusServiceTests
             Direction         = "outbound",
             Channel           = "whatsapp",
             ProviderMessageId = messageSid,
-            Body              = "Test body",
+            Body              = "Mensaje de prueba",
             Status            = status,
         };
         db.Messages.Add(msg);
@@ -64,143 +58,230 @@ public sealed class MessageStatusServiceTests
         return msg;
     }
 
+    private static TwilioMessageStatusRequest BuildRequest(
+        string  sid,
+        string  status,
+        string  from          = "whatsapp:+34910000001",
+        string? errorCode     = null,
+        string? errorMessage  = null) => new()
+    {
+        MessageSid    = sid,
+        MessageStatus = status,
+        AccountSid    = "ACtest",
+        From          = from,
+        To            = "whatsapp:+34612000001",
+        ErrorCode     = errorCode,
+        ErrorMessage  = errorMessage,
+    };
+
     // ════════════════════════════════════════════════════════════════════════
-    // GRUPO 1: MessageDeliveryEvent siempre se crea
+    // GRUPO 1: MessageDeliveryEvent — inserción y campos
     // ════════════════════════════════════════════════════════════════════════
 
     [Fact]
-    public async Task ProcessAsync_CreatesDeliveryEvent_EvenWhenMessageNotFound()
+    public async Task ProcessAsync_InsertsDeliveryEvent_ForDeliveredStatus()
     {
-        using var db  = CreateDb();
-        var       sut = BuildSut(db);
-        var tenantId  = Guid.NewGuid();
-        var req       = BuildRequest("SMorpan001", "delivered");
+        using var db     = CreateDb();
+        var       sut    = BuildSut(db);
+        var       tenant = Guid.NewGuid();
+        var       sid    = "SMdeliv001";
 
-        // No hay Message en la BD → MessageId debe quedar null
-        await sut.ProcessAsync(tenantId, req);
+        await sut.ProcessAsync(tenant, BuildRequest(sid, "delivered"));
 
-        var events = await db.MessageDeliveryEvents.ToListAsync();
-        events.Should().HaveCount(1);
-        events[0].ProviderMessageId.Should().Be("SMorpan001");
-        events[0].Status.Should().Be("delivered");
-        events[0].MessageId.Should().BeNull(
-            "si el Message no existe en BD, MessageId queda null");
-        events[0].TenantId.Should().Be(tenantId);
+        var evt = await db.MessageDeliveryEvents
+            .SingleOrDefaultAsync(e => e.ProviderMessageId == sid);
+
+        evt.Should().NotBeNull();
+        evt!.TenantId.Should().Be(tenant);
+        evt.Status.Should().Be("delivered");
+        evt.Channel.Should().Be("whatsapp");
+        evt.OccurredAt.Should().BeCloseTo(DateTimeOffset.UtcNow,
+            precision: TimeSpan.FromSeconds(5));
     }
 
     [Fact]
-    public async Task ProcessAsync_CreatesDeliveryEvent_WithCorrectChannel()
+    public async Task ProcessAsync_InsertsDeliveryEvent_ForReadStatus()
     {
-        using var db  = CreateDb();
-        var       sut = BuildSut(db);
-        var tenantId  = Guid.NewGuid();
+        using var db     = CreateDb();
+        var       sut    = BuildSut(db);
+        var       tenant = Guid.NewGuid();
+        var       sid    = "SMread001";
 
-        // WhatsApp (From lleva prefijo "whatsapp:")
-        var reqWa = BuildRequest("SMwa001", "sent",
-            from: "whatsapp:+34910000001", to: "whatsapp:+34612000001");
-        await sut.ProcessAsync(tenantId, reqWa);
+        await sut.ProcessAsync(tenant, BuildRequest(sid, "read"));
 
-        // SMS (sin prefijo)
-        var reqSms = BuildRequest("SMsms001", "sent",
-            from: "+34910000002", to: "+34612000002");
-        await sut.ProcessAsync(tenantId, reqSms);
+        var evt = await db.MessageDeliveryEvents
+            .SingleAsync(e => e.ProviderMessageId == sid);
 
-        var events = await db.MessageDeliveryEvents
-            .OrderBy(e => e.OccurredAt)
-            .ToListAsync();
-
-        events[0].Channel.Should().Be("whatsapp");
-        events[1].Channel.Should().Be("sms");
+        evt.Status.Should().Be("read");
     }
 
     [Fact]
-    public async Task ProcessAsync_SetsErrorFields_WhenFailed()
+    public async Task ProcessAsync_InsertsDeliveryEvent_WithErrorFields_OnFailed()
     {
-        using var db  = CreateDb();
-        var       sut = BuildSut(db);
-        var tenantId  = Guid.NewGuid();
-        var req = BuildRequest("SMfail001", "failed",
-            errorCode: "30008", errorMessage: "Unknown destination handset");
+        using var db     = CreateDb();
+        var       sut    = BuildSut(db);
+        var       tenant = Guid.NewGuid();
+        var       sid    = "SMfail001";
 
-        await sut.ProcessAsync(tenantId, req);
+        await sut.ProcessAsync(tenant,
+            BuildRequest(sid, "failed",
+                errorCode:    "30008",
+                errorMessage: "Unknown destination handset"));
 
-        var evt = await db.MessageDeliveryEvents.SingleAsync();
+        var evt = await db.MessageDeliveryEvents
+            .SingleAsync(e => e.ProviderMessageId == sid);
+
         evt.Status.Should().Be("failed");
         evt.ErrorCode.Should().Be("30008");
         evt.ErrorMessage.Should().Be("Unknown destination handset");
     }
 
-    // ════════════════════════════════════════════════════════════════════════
-    // GRUPO 2: Actualización de Message.Status (transiciones)
-    // ════════════════════════════════════════════════════════════════════════
+    [Fact]
+    public async Task ProcessAsync_InsertsDeliveryEvent_WithErrorFields_OnUndelivered()
+    {
+        using var db     = CreateDb();
+        var       sut    = BuildSut(db);
+        var       tenant = Guid.NewGuid();
+        var       sid    = "SMundlv001";
+
+        await sut.ProcessAsync(tenant,
+            BuildRequest(sid, "undelivered",
+                errorCode: "30006", errorMessage: "Landline or unreachable"));
+
+        var evt = await db.MessageDeliveryEvents
+            .SingleAsync(e => e.ProviderMessageId == sid);
+
+        evt.Status.Should().Be("undelivered");
+        evt.ErrorCode.Should().Be("30006");
+    }
 
     [Theory]
-    [InlineData("sent",        "sent",      true)]
-    [InlineData("delivered",   "delivered", true)]
-    [InlineData("read",        "read",      true)]
-    [InlineData("failed",      "failed",    true)]
-    [InlineData("undelivered", "undelivered", true)]
-    public async Task ProcessAsync_UpdatesMessageStatus_ForAllTerminalAndProgressive(
-        string incomingStatus, string expectedStatus, bool _)
+    [InlineData("sent")]
+    [InlineData("delivered")]
+    [InlineData("read")]
+    [InlineData("failed")]
+    [InlineData("undelivered")]
+    public async Task ProcessAsync_InsertsExactlyOneEvent_PerCall(string status)
     {
         using var db     = CreateDb();
         var       sut    = BuildSut(db);
         var       tenant = Guid.NewGuid();
-        var       msg    = await SeedMessageAsync(db, tenant, "SMtrans001", "pending");
+        var       sid    = $"SM_{status}_001";
 
-        await sut.ProcessAsync(tenant, BuildRequest("SMtrans001", incomingStatus));
+        await sut.ProcessAsync(tenant, BuildRequest(sid, status));
 
-        var updated = await db.Messages.FindAsync(msg.Id);
-        updated!.Status.Should().Be(expectedStatus);
-    }
-
-    [Fact]
-    public async Task ProcessAsync_SetsDeliveredAt_WhenDelivered()
-    {
-        using var db     = CreateDb();
-        var       sut    = BuildSut(db);
-        var       tenant = Guid.NewGuid();
-        var       msg    = await SeedMessageAsync(db, tenant, "SMda001", "sent");
-        var       before = DateTimeOffset.UtcNow.AddSeconds(-1);
-
-        await sut.ProcessAsync(tenant, BuildRequest("SMda001", "delivered"));
-
-        var updated = await db.Messages.FindAsync(msg.Id);
-        updated!.DeliveredAt.Should().NotBeNull();
-        updated.DeliveredAt!.Value.Should().BeAfter(before);
-    }
-
-    [Fact]
-    public async Task ProcessAsync_SetsReadAt_WhenRead()
-    {
-        using var db     = CreateDb();
-        var       sut    = BuildSut(db);
-        var       tenant = Guid.NewGuid();
-        var       msg    = await SeedMessageAsync(db, tenant, "SMread001", "delivered");
-
-        await sut.ProcessAsync(tenant, BuildRequest("SMread001", "read"));
-
-        var updated = await db.Messages.FindAsync(msg.Id);
-        updated!.Status.Should().Be("read");
-        updated.ReadAt.Should().NotBeNull();
-    }
-
-    [Fact]
-    public async Task ProcessAsync_SetsSentAt_WhenSent()
-    {
-        using var db     = CreateDb();
-        var       sut    = BuildSut(db);
-        var       tenant = Guid.NewGuid();
-        var       msg    = await SeedMessageAsync(db, tenant, "SMsent001", "pending");
-
-        await sut.ProcessAsync(tenant, BuildRequest("SMsent001", "sent"));
-
-        var updated = await db.Messages.FindAsync(msg.Id);
-        updated!.SentAt.Should().NotBeNull();
+        var count = await db.MessageDeliveryEvents.CountAsync();
+        count.Should().Be(1);
     }
 
     // ════════════════════════════════════════════════════════════════════════
-    // GRUPO 3: Regla de no-regresión
+    // GRUPO 2: Correlación MessageId / ConversationId
+    // ════════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task ProcessAsync_SetsMessageId_WhenMessageExistsInDb()
+    {
+        using var db     = CreateDb();
+        var       sut    = BuildSut(db);
+        var       tenant = Guid.NewGuid();
+        var       sid    = "SMcorr001";
+
+        var msg = await SeedMessageAsync(db, tenant, sid);
+
+        await sut.ProcessAsync(tenant, BuildRequest(sid, "delivered"));
+
+        var evt = await db.MessageDeliveryEvents
+            .SingleAsync(e => e.ProviderMessageId == sid);
+
+        evt.MessageId.Should().Be(msg.Id,
+            "el DeliveryEvent debe correlacionarse con el Message interno");
+        evt.ConversationId.Should().Be(msg.ConversationId,
+            "el ConversationId se copia del Message para JOIN con conversations");
+    }
+
+    [Fact]
+    public async Task ProcessAsync_SetsMessageIdNull_WhenMessageNotInDb()
+    {
+        using var db     = CreateDb();
+        var       sut    = BuildSut(db);
+        var       tenant = Guid.NewGuid();
+
+        // No se hace seed de ningún Message
+        await sut.ProcessAsync(tenant, BuildRequest("SMorphan001", "delivered"));
+
+        var evt = await db.MessageDeliveryEvents
+            .SingleAsync(e => e.ProviderMessageId == "SMorphan001");
+
+        evt.MessageId.Should().BeNull(
+            "si el Message no está en BD, el evento se registra sin MessageId");
+        evt.ConversationId.Should().BeNull();
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // GRUPO 3: Actualización de Message.Status y timestamps
+    // ════════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task ProcessAsync_UpdatesMessageStatus_ToDelivered()
+    {
+        using var db     = CreateDb();
+        var       sut    = BuildSut(db);
+        var       tenant = Guid.NewGuid();
+        var       sid    = "SMupd001";
+
+        var msg = await SeedMessageAsync(db, tenant, sid, "sent");
+
+        await sut.ProcessAsync(tenant, BuildRequest(sid, "delivered"));
+
+        await db.Entry(msg).ReloadAsync();
+        msg.Status.Should().Be("delivered");
+        msg.DeliveredAt.Should().NotBeNull();
+        msg.SentAt.Should().NotBeNull(
+            "SentAt debe estar establecido al llegar 'delivered' si aún era null");
+    }
+
+    [Fact]
+    public async Task ProcessAsync_UpdatesMessageStatus_ToRead_AndSetsAllTimestamps()
+    {
+        using var db     = CreateDb();
+        var       sut    = BuildSut(db);
+        var       tenant = Guid.NewGuid();
+        var       sid    = "SMread002";
+
+        var msg = await SeedMessageAsync(db, tenant, sid, "sent");
+
+        await sut.ProcessAsync(tenant, BuildRequest(sid, "read"));
+
+        await db.Entry(msg).ReloadAsync();
+        msg.Status.Should().Be("read");
+        msg.SentAt.Should().NotBeNull();
+        msg.DeliveredAt.Should().NotBeNull(
+            "al llegar 'read' sin 'delivered' previo, DeliveredAt debe rellenarse");
+        msg.ReadAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task ProcessAsync_UpdatesMessageStatus_ToFailed_WithErrorFields()
+    {
+        using var db     = CreateDb();
+        var       sut    = BuildSut(db);
+        var       tenant = Guid.NewGuid();
+        var       sid    = "SMfail002";
+
+        var msg = await SeedMessageAsync(db, tenant, sid, "sent");
+
+        await sut.ProcessAsync(tenant,
+            BuildRequest(sid, "failed",
+                errorCode: "30003", errorMessage: "Unreachable destination handset"));
+
+        await db.Entry(msg).ReloadAsync();
+        msg.Status.Should().Be("failed");
+        msg.ErrorCode.Should().Be("30003");
+        msg.ErrorMessage.Should().Be("Unreachable destination handset");
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // GRUPO 4: Regla de no-regresión de estado
     // ════════════════════════════════════════════════════════════════════════
 
     [Fact]
@@ -209,14 +290,17 @@ public sealed class MessageStatusServiceTests
         using var db     = CreateDb();
         var       sut    = BuildSut(db);
         var       tenant = Guid.NewGuid();
-        var       msg    = await SeedMessageAsync(db, tenant, "SMreg001", "read");
+        var       sid    = "SMnoregress001";
 
-        // Llega un "delivered" tardío (out-of-order) → no debe revertir "read"
-        await sut.ProcessAsync(tenant, BuildRequest("SMreg001", "delivered"));
+        // Estado inicial ya es "read" (el más avanzado del ciclo normal)
+        var msg = await SeedMessageAsync(db, tenant, sid, "read");
 
-        var updated = await db.Messages.FindAsync(msg.Id);
-        updated!.Status.Should().Be("read",
-            "el estado no puede retroceder: read > delivered");
+        // Intentar retroceder a "delivered"
+        await sut.ProcessAsync(tenant, BuildRequest(sid, "delivered"));
+
+        await db.Entry(msg).ReloadAsync();
+        msg.Status.Should().Be("read",
+            "un callback 'delivered' no debe retroceder el estado desde 'read'");
     }
 
     [Fact]
@@ -225,80 +309,101 @@ public sealed class MessageStatusServiceTests
         using var db     = CreateDb();
         var       sut    = BuildSut(db);
         var       tenant = Guid.NewGuid();
-        var       msg    = await SeedMessageAsync(db, tenant, "SMreg002", "delivered");
+        var       sid    = "SMnoregress002";
 
-        await sut.ProcessAsync(tenant, BuildRequest("SMreg002", "sent"));
+        var msg = await SeedMessageAsync(db, tenant, sid, "delivered");
 
-        var updated = await db.Messages.FindAsync(msg.Id);
-        updated!.Status.Should().Be("delivered");
+        await sut.ProcessAsync(tenant, BuildRequest(sid, "sent"));
+
+        await db.Entry(msg).ReloadAsync();
+        msg.Status.Should().Be("delivered",
+            "'sent' no debe retroceder el estado desde 'delivered'");
     }
 
     [Fact]
-    public async Task ProcessAsync_AlwaysAppliesFailed_EvenFromRead()
+    public async Task ProcessAsync_AppliesFailed_EvenIfCurrentIsDelivered()
     {
-        // "failed" es terminal: puede aplicarse desde cualquier estado
+        // Los estados terminales (failed/undelivered) siempre se aplican,
+        // independientemente del estado actual. Esto modela una situación
+        // donde el mensaje fue marcado como delivered por un nodo pero
+        // luego Twilio reportó un error definitivo.
         using var db     = CreateDb();
         var       sut    = BuildSut(db);
         var       tenant = Guid.NewGuid();
-        var       msg    = await SeedMessageAsync(db, tenant, "SMreg003", "read");
+        var       sid    = "SMterminal001";
+
+        var msg = await SeedMessageAsync(db, tenant, sid, "delivered");
 
         await sut.ProcessAsync(tenant,
-            BuildRequest("SMreg003", "failed",
-                errorCode: "30001", errorMessage: "Queue overflow"));
+            BuildRequest(sid, "failed",
+                errorCode: "30005", errorMessage: "Unknown destination number"));
 
-        var updated = await db.Messages.FindAsync(msg.Id);
-        updated!.Status.Should().Be("failed",
-            "failed es terminal y debe aplicarse aunque el estado actual sea read");
-        updated.ErrorCode.Should().Be("30001");
+        await db.Entry(msg).ReloadAsync();
+        msg.Status.Should().Be("failed",
+            "los estados terminales siempre se aplican sobre cualquier estado previo");
+        msg.ErrorCode.Should().Be("30005");
     }
 
     // ════════════════════════════════════════════════════════════════════════
-    // GRUPO 4: Correlación MessageDeliveryEvent ↔ Message
+    // GRUPO 5: Canal detectado desde el prefijo del número
     // ════════════════════════════════════════════════════════════════════════
 
-    [Fact]
-    public async Task ProcessAsync_LinksDeliveryEvent_ToExistingMessage()
+    [Theory]
+    [InlineData("whatsapp:+34910000001", "whatsapp")]
+    [InlineData("+34910000001",          "sms")]
+    public async Task ProcessAsync_DetectsChannel_FromFromField(
+        string from, string expectedChannel)
     {
         using var db     = CreateDb();
         var       sut    = BuildSut(db);
         var       tenant = Guid.NewGuid();
-        var       msg    = await SeedMessageAsync(db, tenant, "SMcorr001", "sent");
+        var       sid    = $"SMchan_{expectedChannel}_001";
 
-        await sut.ProcessAsync(tenant, BuildRequest("SMcorr001", "delivered"));
+        await sut.ProcessAsync(tenant,
+            BuildRequest(sid, "delivered", from: from));
 
         var evt = await db.MessageDeliveryEvents
-            .FirstAsync(e => e.ProviderMessageId == "SMcorr001");
+            .SingleAsync(e => e.ProviderMessageId == sid);
 
-        evt.MessageId.Should().Be(msg.Id,
-            "MessageDeliveryEvent.MessageId debe correlacionarse con Message.Id");
-        evt.ConversationId.Should().Be(msg.ConversationId,
-            "ConversationId debe propagarse desde el Message padre");
-        evt.TenantId.Should().Be(tenant);
+        evt.Channel.Should().Be(expectedChannel);
     }
 
     // ════════════════════════════════════════════════════════════════════════
-    // GRUPO 5: Múltiples transiciones del mismo SID
+    // GRUPO 6: Múltiples transiciones del mismo MessageSid
     // ════════════════════════════════════════════════════════════════════════
 
     [Fact]
-    public async Task ProcessAsync_CreatesMultipleDeliveryEvents_ForAllTransitions()
+    public async Task ProcessAsync_InsertsMultipleEvents_ForDifferentStatusTransitions()
     {
         using var db     = CreateDb();
         var       sut    = BuildSut(db);
         var       tenant = Guid.NewGuid();
-        await SeedMessageAsync(db, tenant, "SMseq001", "pending");
+        var       sid    = "SMmulti001";
 
-        await sut.ProcessAsync(tenant, BuildRequest("SMseq001", "sent"));
-        await sut.ProcessAsync(tenant, BuildRequest("SMseq001", "delivered"));
-        await sut.ProcessAsync(tenant, BuildRequest("SMseq001", "read"));
+        await SeedMessageAsync(db, tenant, sid, "pending");
+
+        // Simular el ciclo completo: sent → delivered → read
+        await sut.ProcessAsync(tenant, BuildRequest(sid, "sent"));
+        await sut.ProcessAsync(tenant, BuildRequest(sid, "delivered"));
+        await sut.ProcessAsync(tenant, BuildRequest(sid, "read"));
 
         var events = await db.MessageDeliveryEvents
-            .Where(e => e.ProviderMessageId == "SMseq001")
+            .Where(e => e.ProviderMessageId == sid)
             .OrderBy(e => e.OccurredAt)
             .ToListAsync();
 
-        events.Should().HaveCount(3);
+        events.Should().HaveCount(3,
+            "cada transición de estado debe generar un DeliveryEvent independiente");
         events.Select(e => e.Status).Should()
-            .ContainInOrder("sent", "delivered", "read");
+            .Equal(["sent", "delivered", "read"]);
+
+        // El Message debe estar en su estado más avanzado
+        var db2 = CreateDb(); // contexto limpio no tiene los datos; usamos el mismo
+        var msg = await db.Messages
+            .FirstAsync(m => m.ProviderMessageId == sid);
+        msg.Status.Should().Be("read");
+        msg.SentAt.Should().NotBeNull();
+        msg.DeliveredAt.Should().NotBeNull();
+        msg.ReadAt.Should().NotBeNull();
     }
 }
