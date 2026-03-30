@@ -12,6 +12,8 @@ using ClinicBoost.Api.Features.Webhooks.Voice.MissedCall;
 using ClinicBoost.Api.Features.Webhooks.WhatsApp.Inbound;
 using ClinicBoost.Api.Features.Webhooks.WhatsApp.Status;
 using ClinicBoost.Api.Features.Agent;
+using ClinicBoost.Api.Features.Appointments;
+using FluentValidation;
 using System.Text;
 
 namespace ClinicBoost.Api.Infrastructure.Extensions;
@@ -283,6 +285,22 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
+    // Gestión de citas: slots, reserva, cancelación y reprogramación
+    public static IServiceCollection AddAppointmentsFeature(
+        this IServiceCollection services)
+    {
+        // Servicio principal de citas (Scoped: depende de AppDbContext)
+        services.AddScoped<IAppointmentService, AppointmentService>();
+
+        // Validadores FluentValidation para los DTOs de citas
+        services.AddScoped<IValidator<GetAvailableSlotsRequest>, GetAvailableSlotsValidator>();
+        services.AddScoped<IValidator<BookAppointmentRequest>,    BookAppointmentValidator>();
+        services.AddScoped<IValidator<CancelAppointmentRequest>,  CancelAppointmentValidator>();
+        services.AddScoped<IValidator<RescheduleAppointmentRequest>, RescheduleAppointmentValidator>();
+
+        return services;
+    }
+
     // Feature services aggregator
     public static IServiceCollection AddFeatureServices(
         this IServiceCollection services,
@@ -294,6 +312,7 @@ public static class ServiceCollectionExtensions
         services.AddWhatsAppInboundFeature();
         services.AddMessageStatusFeature();
         services.AddConversationalAgentFeature();
+        services.AddAppointmentsFeature();
         return services;
     }
 }
@@ -315,6 +334,7 @@ public static class EndpointRouteBuilderExtensions
         app.MapMissedCallEndpoints();
         app.MapWhatsAppInboundEndpoints();
         app.MapMessageStatusEndpoints();
+        app.MapAppointmentEndpoints();
         return app;
     }
 }
