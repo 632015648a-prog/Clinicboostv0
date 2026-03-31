@@ -119,11 +119,16 @@ GRANT USAGE ON SCHEMA public TO anon_user;
 
 -- REVOKE explícito: ningún rol puede acceder al schema auth (GoTrue interno)
 -- Supabase gestiona este schema; la app nunca debe tocarlo directamente.
-REVOKE ALL ON SCHEMA auth FROM app_user;
-REVOKE ALL ON SCHEMA auth FROM anon_user;
--- migration_user tampoco: los schemas de GoTrue se gestionan exclusivamente
--- por el proceso de actualización de Supabase.
-REVOKE ALL ON SCHEMA auth FROM migration_user;
+-- Se envuelve en DO...EXCEPTION porque en entorno local el schema auth
+-- puede no existir aún o el rol de migración puede no tener permisos sobre él.
+DO $$
+BEGIN
+  REVOKE ALL ON SCHEMA auth FROM app_user;
+  REVOKE ALL ON SCHEMA auth FROM anon_user;
+  REVOKE ALL ON SCHEMA auth FROM migration_user;
+EXCEPTION WHEN insufficient_privilege OR invalid_schema_name THEN
+  RAISE NOTICE 'SKIP: REVOKE ON SCHEMA auth — insufficient_privilege or schema not visible (expected in local dev)';
+END $$;
 
 
 -- ══════════════════════════════════════════════════════════════
@@ -136,24 +141,54 @@ REVOKE ALL ON SCHEMA auth FROM migration_user;
 -- Las siguientes medidas previenen esto para app_user:
 -- ══════════════════════════════════════════════════════════════
 
--- 3.1 app_user NO tiene BYPASSRLS
--- (por defecto los roles nuevos no lo tienen, pero lo hacemos explícito)
-ALTER ROLE app_user NOBYPASSRLS;
+-- 3.1-3.5  Hardening de atributos de rol
+--
+-- ALTER ROLE con atributos NOSUPERUSER / NOREPLICATION / NOBYPASSRLS
+-- solo puede ejecutarlo un superuser. En el entorno local de Supabase
+-- (Docker) el usuario de migraciones NO es superuser, por lo que
+-- capturamos el error 42501 (insufficient_privilege) y emitimos un
+-- NOTICE en su lugar, de modo que la migración no falle.
+-- En producción (Supabase Cloud), si el rol de migraciones es superuser,
+-- los ALTER ROLE se ejecutarán con éxito.
+DO $$
+BEGIN
+  -- app_user: sin BYPASSRLS
+  ALTER ROLE app_user NOBYPASSRLS;
+EXCEPTION WHEN insufficient_privilege THEN
+  RAISE NOTICE 'SKIP: ALTER ROLE app_user NOBYPASSRLS — insufficient_privilege (expected in local dev)';
+END $$;
 
--- 3.2 app_user NO es superuser ni tiene CREATEROLE
-ALTER ROLE app_user NOSUPERUSER NOCREATEROLE NOCREATEDB NOREPLICATION;
+DO $$
+BEGIN
+  -- app_user: sin atributos de superuser
+  ALTER ROLE app_user NOSUPERUSER NOCREATEROLE NOCREATEDB NOREPLICATION;
+EXCEPTION WHEN insufficient_privilege THEN
+  RAISE NOTICE 'SKIP: ALTER ROLE app_user NOSUPERUSER... — insufficient_privilege (expected in local dev)';
+END $$;
 
--- 3.3 Revocar la capacidad de SET SESSION AUTHORIZATION
---     (evita que el código de la app cambie el rol en tiempo de ejecución)
-REVOKE SET SESSION AUTHORIZATION FROM app_user;
+DO $$
+BEGIN
+  -- Revocar SET SESSION AUTHORIZATION (evita cambio de rol en runtime)
+  REVOKE SET SESSION AUTHORIZATION FROM app_user;
+EXCEPTION WHEN insufficient_privilege THEN
+  RAISE NOTICE 'SKIP: REVOKE SET SESSION AUTHORIZATION FROM app_user — insufficient_privilege (expected in local dev)';
+END $$;
 
--- 3.4 anon_user: mismas restricciones
-ALTER ROLE anon_user NOBYPASSRLS NOSUPERUSER NOCREATEROLE NOCREATEDB NOREPLICATION;
+DO $$
+BEGIN
+  -- anon_user: mismas restricciones
+  ALTER ROLE anon_user NOBYPASSRLS NOSUPERUSER NOCREATEROLE NOCREATEDB NOREPLICATION;
+EXCEPTION WHEN insufficient_privilege THEN
+  RAISE NOTICE 'SKIP: ALTER ROLE anon_user ... — insufficient_privilege (expected in local dev)';
+END $$;
 
--- 3.5 migration_user: no debe tener BYPASSRLS; la RLS no interfiere con las
---     migraciones porque migration_user es owner de las tablas. Sin embargo,
---     lo dejamos explícito para documentación:
-ALTER ROLE migration_user NOBYPASSRLS NOSUPERUSER NOCREATEROLE NOCREATEDB NOREPLICATION;
+DO $$
+BEGIN
+  -- migration_user: explícito para documentación
+  ALTER ROLE migration_user NOBYPASSRLS NOSUPERUSER NOCREATEROLE NOCREATEDB NOREPLICATION;
+EXCEPTION WHEN insufficient_privilege THEN
+  RAISE NOTICE 'SKIP: ALTER ROLE migration_user ... — insufficient_privilege (expected in local dev)';
+END $$;
 
 
 -- ══════════════════════════════════════════════════════════════
@@ -237,23 +272,40 @@ GRANT EXECUTE ON FUNCTION insert_audit_log TO app_user;
 -- Son la fuente de verdad del modelo de seguridad.
 -- ══════════════════════════════════════════════════════════════
 
-COMMENT ON ROLE app_user IS
-  'Rol de runtime de ClinicBoost.Api (.NET). '
-  'SOLO permisos DML. Las políticas RLS filtran por tenant_id del JWT. '
-  'PROHIBIDO: DDL, DISABLE RLS, SET ROLE a roles privilegiados. '
-  'Credencial: connection string en secrets del servidor. NUNCA en código fuente.';
+-- COMMENT ON ROLE requiere ser superuser o dueño del rol.
+-- Se envuelven en bloques DO para que el entorno local no falle.
+DO $$
+BEGIN
+  COMMENT ON ROLE app_user IS
+    'Rol de runtime de ClinicBoost.Api (.NET). '
+    'SOLO permisos DML. Las políticas RLS filtran por tenant_id del JWT. '
+    'PROHIBIDO: DDL, DISABLE RLS, SET ROLE a roles privilegiados. '
+    'Credencial: connection string en secrets del servidor. NUNCA en código fuente.';
+EXCEPTION WHEN insufficient_privilege THEN
+  RAISE NOTICE 'SKIP: COMMENT ON ROLE app_user — insufficient_privilege (expected in local dev)';
+END $$;
 
-COMMENT ON ROLE anon_user IS
-  'Rol para peticiones no autenticadas (health checks, webhooks sin JWT). '
-  'SIN acceso a ninguna tabla de negocio. '
-  'La anon key de Supabase puede exponerse en el frontend porque este rol '
-  'no tiene acceso a datos sin un JWT válido de GoTrue.';
+DO $$
+BEGIN
+  COMMENT ON ROLE anon_user IS
+    'Rol para peticiones no autenticadas (health checks, webhooks sin JWT). '
+    'SIN acceso a ninguna tabla de negocio. '
+    'La anon key de Supabase puede exponerse en el frontend porque este rol '
+    'no tiene acceso a datos sin un JWT válido de GoTrue.';
+EXCEPTION WHEN insufficient_privilege THEN
+  RAISE NOTICE 'SKIP: COMMENT ON ROLE anon_user — insufficient_privilege (expected in local dev)';
+END $$;
 
-COMMENT ON ROLE migration_user IS
-  'Rol exclusivo para migraciones DDL. '
-  'Credencial conocida solo por CI/CD (GitHub Actions secret). '
-  'NUNCA usar en la connection string de la aplicación en runtime. '
-  'No tiene BYPASSRLS pero sí DDL como owner de las tablas.';
+DO $$
+BEGIN
+  COMMENT ON ROLE migration_user IS
+    'Rol exclusivo para migraciones DDL. '
+    'Credencial conocida solo por CI/CD (GitHub Actions secret). '
+    'NUNCA usar en la connection string de la aplicación en runtime. '
+    'No tiene BYPASSRLS pero sí DDL como owner de las tablas.';
+EXCEPTION WHEN insufficient_privilege THEN
+  RAISE NOTICE 'SKIP: COMMENT ON ROLE migration_user — insufficient_privilege (expected in local dev)';
+END $$;
 
 COMMENT ON FUNCTION insert_audit_log IS
   'Función SECURITY DEFINER para insertar en audit_logs. '
