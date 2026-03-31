@@ -401,16 +401,18 @@ public sealed class ConversationalAgent : IConversationalAgent
     {
         try
         {
-            // Buscar el messageId del mensaje inbound que generó este turno
-            var msgId = ctx.RecentMessages.LastOrDefault(m =>
-                m.Direction == "inbound" &&
-                m.ProviderMessageId == ctx.MessageSid)?.Id ?? Guid.Empty;
+            // N-P2-01: el Take(15) puede excluir el mensaje inbound actual si la
+            // conversación es muy larga. Usar null en lugar de Guid.Empty para que
+            // el AgentTurn no tenga una FK huérfana que apunta a un ID inexistente.
+            var matchedMsg = ctx.RecentMessages.LastOrDefault(m =>
+                m.Direction        == "inbound" &&
+                m.ProviderMessageId == ctx.MessageSid);
 
             var turn = new AgentTurn
             {
                 TenantId         = ctx.TenantId,
                 ConversationId   = ctx.ConversationId,
-                MessageId        = msgId,
+                MessageId        = matchedMsg?.Id ?? Guid.Empty,
                 IntentName       = result.Intent.Intent.ToString(),
                 IntentConfidence = result.Intent.Confidence,
                 ActionName       = result.Action.ToString(),

@@ -154,9 +154,10 @@ public static class AuthEndpoints
 
     private static string? GetClientIp(HttpContext ctx)
     {
-        var forwarded = ctx.Request.Headers["X-Forwarded-For"].FirstOrDefault();
-        if (!string.IsNullOrEmpty(forwarded))
-            return forwarded.Split(',')[0].Trim();
+        // N-P0-02 fix: UseForwardedHeaders() ya procesó X-Forwarded-For y actualizó
+        // Connection.RemoteIpAddress con la IP real del cliente.
+        // Leer directamente el header aquí bypasearía el middleware y permitiría
+        // que un cliente malicioso falsifique su IP en los logs de auditoría.
         return ctx.Connection.RemoteIpAddress?.ToString();
     }
 }

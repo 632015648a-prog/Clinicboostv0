@@ -143,6 +143,11 @@ public static class VariantStatsEndpoints
             ClinicBoost.Api.Infrastructure.Database.AppDbContext db,
             ITenantContext               tenantCtx) =>
         {
+            // N-P2-02: validar formato de flowId opcional para consistencia y para
+            // prevenir que valores malformados lleguen a la query de la BD.
+            if (!string.IsNullOrEmpty(flowId) && !FlowIdRegex.IsMatch(flowId))
+                return Results.BadRequest("'flowId' debe tener formato 'flow_0N' (N=0-7).");
+
             var query = db.MessageVariants
                 .Where(v => v.TenantId == tenantCtx.TenantId);
 

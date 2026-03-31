@@ -54,7 +54,9 @@ public sealed class AppointmentService : IAppointmentService
     private static readonly HashSet<string> ValidActors =
         ["patient", "therapist", "admin", "ai", "system"];
 
-    private const decimal DefaultSuccessFeePct = 0.15m;
+    // N-P2-04: DefaultSuccessFeePct eliminada (era dead code).
+    // El porcentaje real se lee siempre de RuleConfig global/success_fee_pct
+    // mediante GetSuccessFeePctAsync (default 0.15 solo como fallback interno de ese helper).
 
     public AppointmentService(
         AppDbContext                db,
@@ -726,6 +728,9 @@ public sealed class AppointmentService : IAppointmentService
 
     private async Task<decimal> GetSuccessFeePctAsync(Guid tenantId, CancellationToken ct)
     {
+        // Fallback explícito si el tenant no tiene RuleConfig configurada.
+        const decimal DefaultFee = 0.15m;
+
         var rule = await _db.RuleConfigs
             .Where(r =>
                 r.TenantId == tenantId &&
@@ -738,7 +743,7 @@ public sealed class AppointmentService : IAppointmentService
         if (rule is not null && decimal.TryParse(rule, out var pct))
             return pct / 100m;
 
-        return DefaultSuccessFeePct;
+        return DefaultFee;
     }
 
     private async Task<AppointmentError?> ValidateDiscountAsync(

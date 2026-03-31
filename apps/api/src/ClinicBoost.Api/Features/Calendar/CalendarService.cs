@@ -167,7 +167,7 @@ public sealed class CalendarService : ICalendarService
             await _cacheStore.UpsertAsync(newEntry, ct);
 
             // Actualizar SyncStatus en CalendarConnection
-            await UpdateConnectionSyncStatusAsync(connectionId, "ok", null, ct);
+            await UpdateConnectionSyncStatusAsync(tenantId, connectionId, "ok", null, ct);
 
             _logger.LogInformation(
                 "[CalendarService] Caché actualizada. ConnectionId={ConnectionId} Slots={Count}",
@@ -184,7 +184,7 @@ public sealed class CalendarService : ICalendarService
             connectionId, errorMsg);
 
         await _cacheStore.MarkErrorAsync(tenantId, connectionId, errorMsg, ct);
-        await UpdateConnectionSyncStatusAsync(connectionId, "error", errorMsg, ct);
+        await UpdateConnectionSyncStatusAsync(tenantId, connectionId, "error", errorMsg, ct);
 
         // Fallback: usar caché stale si no es demasiado antigua
         if (cached is not null && (now - cached.FetchedAtUtc) < _opts.MaxStaleAge)
@@ -243,7 +243,10 @@ public sealed class CalendarService : ICalendarService
         }
     }
 
+    // N-P0-04: incluir TenantId en el filtro de escritura para cumplir ADR-001
+    // (defensa en profundidad; los UUIDs son únicos pero la RLS lo requiere explícitamente).
     private async Task UpdateConnectionSyncStatusAsync(
+        Guid              tenantId,
         Guid              connectionId,
         string            status,
         string?           error,
@@ -252,7 +255,7 @@ public sealed class CalendarService : ICalendarService
         try
         {
             await _db.CalendarConnections
-                .Where(c => c.Id == connectionId)
+                .Where(c => c.Id == connectionId && c.TenantId == tenantId)
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(c => c.SyncStatus,    status)
                     .SetProperty(c => c.LastSyncedAt,  DateTimeOffset.UtcNow)

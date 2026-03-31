@@ -146,8 +146,23 @@ public sealed class Flow01Orchestrator
         // ── 3b. Cooldown: evitar spam si ya recibió un WA reciente ────────────
         // P1: si existe un outbound de flow_01 enviado en los últimos N minutos
         // al mismo paciente, se omite el envío para prevenir spam y cumplir RGPD.
-        const int CooldownMinutes = 60; // configurable vía RuleConfig en sprint futuro
-        var cooldownCutoff = callReceivedAt.AddMinutes(-CooldownMinutes);
+        // N-P0-01 fix: el cutoff se calcula desde UtcNow, no desde callReceivedAt.
+        // callReceivedAt es el instante de la llamada (en el pasado); restar minutos
+        // sobre él producía una ventana anclada al pasado que nunca se activaba.
+        // N-P1-05: leer cooldown_minutes de RuleConfig del tenant para flexibilidad multi-tenant.
+        var cooldownRule = await _db.RuleConfigs.AsNoTracking()
+            .FirstOrDefaultAsync(r =>
+                r.TenantId == tenantId &&
+                r.FlowId   == "flow_01" &&
+                r.RuleKey  == "cooldown_minutes" &&
+                r.IsActive, ct);
+        int cooldownMinutes = cooldownRule is not null
+            && int.TryParse(cooldownRule.RuleValue,
+                   System.Globalization.NumberStyles.Integer,
+                   System.Globalization.CultureInfo.InvariantCulture, out var cm)
+            && cm > 0 ? cm : 60;
+
+        var cooldownCutoff = DateTimeOffset.UtcNow.AddMinutes(-cooldownMinutes);
 
         // JOIN Message → Conversation para filtrar por FlowId (Message no tiene FlowId propio)
         var recentOutbound = await (
@@ -169,7 +184,7 @@ public sealed class Flow01Orchestrator
                 "[Flow01] Cooldown activo: outbound reciente encontrado. " +
                 "PatientId={PatientId} CooldownMin={Min} TenantId={TenantId}. " +
                 "Se omite el envío para evitar spam.",
-                patient.Id, CooldownMinutes, tenantId);
+                patient.Id, cooldownMinutes, tenantId);
 
             await _metrics.RecordAsync(new FlowMetricsEvent
             {
@@ -181,12 +196,12 @@ public sealed class Flow01Orchestrator
                 Metadata      = JsonSerializer.Serialize(new
                 {
                     reason           = "cooldown_active",
-                    cooldown_minutes = CooldownMinutes,
+                    cooldown_minutes = cooldownMinutes,
                 }),
             }, ct);
 
             return Flow01Result.Skipped(patient.Id,
-                $"Cooldown activo: mensaje reciente enviado en los últimos {CooldownMinutes} min.");
+                $"Cooldown activo: mensaje reciente enviado en los últimos {cooldownMinutes} min.");
         }
 
         // ── 4. Verificar consentimiento RGPD ──────────────────────────────────
@@ -359,6 +374,10 @@ public sealed class Flow01Orchestrator
         // RevenueEvent (lógica económica SOLO en backend — never en prompts ni frontend)
         if (revenue.HasValue && revenue.Value > 0)
         {
+            // N-P0-03 fix: leer success_fee_pct de RuleConfig del tenant en lugar
+            // de usar el magic number 0.15m. Mismo patrón que AppointmentService.
+            var successFeePct = await GetSuccessFeePctAsync(tenantId, ct);
+
             var revEvent = new RevenueEvent
             {
                 TenantId             = tenantId,
@@ -369,7 +388,7 @@ public sealed class Flow01Orchestrator
                 Amount               = revenue.Value,
                 Currency             = "EUR",
                 IsSuccessFeeEligible = true,
-                SuccessFeeAmount     = Math.Round(revenue.Value * 0.15m, 2),
+                SuccessFeeAmount     = Math.Round(revenue.Value * successFeePct, 2),
                 AttributionData      = JsonSerializer.Serialize(new
                 {
                     flow               = "flow_01",
@@ -384,9 +403,9 @@ public sealed class Flow01Orchestrator
 
             _logger.LogInformation(
                 "[Flow01] Revenue registrado. AppointmentId={AptId} Amount={Amt}EUR " +
-                "SuccessFee={Fee}EUR VariantId={VarId} TenantId={TenantId}",
+                "SuccessFee={Fee}EUR FeePct={Pct:P2} VariantId={VarId} TenantId={TenantId}",
                 appointmentId, revenue.Value, revEvent.SuccessFeeAmount,
-                messageVariantId, tenantId);
+                successFeePct, messageVariantId, tenantId);
         }
 
         // ── Registrar evento booked en funnel de variante ─────────────────────
@@ -481,6 +500,34 @@ public sealed class Flow01Orchestrator
         var firstName = patientName.Split(' ')[0];
         return $"Hola {firstName}, hemos visto que intentaste llamarnos y no pudimos atenderte. " +
                "¿En qué podemos ayudarte? Puedes escribirnos aquí y te atendemos en breve.";
+    }
+
+    /// <summary>
+    /// Lee el porcentaje de success fee del tenant desde RuleConfig (global/success_fee_pct).
+    /// Devuelve el valor como decimal [0,1]. Default: 0.15 si no está configurado.
+    /// N-P0-03: mismo patrón que AppointmentService.GetSuccessFeePctAsync.
+    /// </summary>
+    private async Task<decimal> GetSuccessFeePctAsync(Guid tenantId, CancellationToken ct)
+    {
+        const decimal DefaultFee = 0.15m;
+
+        var rule = await _db.RuleConfigs
+            .AsNoTracking()
+            .FirstOrDefaultAsync(r =>
+                r.TenantId == tenantId &&
+                r.FlowId   == "global" &&
+                r.RuleKey  == "success_fee_pct" &&
+                r.IsActive, ct);
+
+        if (rule is null)
+            return DefaultFee;
+
+        return decimal.TryParse(rule.RuleValue,
+                   System.Globalization.NumberStyles.Number,
+                   System.Globalization.CultureInfo.InvariantCulture,
+                   out var pct) && pct > 0
+            ? pct / 100m
+            : DefaultFee;
     }
 }
 

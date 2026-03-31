@@ -103,6 +103,20 @@ public sealed class MessageStatusService : IMessageStatusService
             ApplyStatusTransition(message, request, now);
         }
 
+        // N-P1-03: cargar la conversación para propagar FlowId al DeliveryEvent.
+        // Message no tiene FlowId propio; lo hereda de su Conversation padre.
+        // AsNoTracking porque solo necesitamos el FlowId para el evento.
+        string? flowId = null;
+        if (message?.ConversationId is not null)
+        {
+            var conv = await _db.Conversations
+                .AsNoTracking()
+                .Where(c => c.Id == message.ConversationId && c.TenantId == tenantId)
+                .Select(c => new { c.FlowId })
+                .FirstOrDefaultAsync(ct);
+            flowId = conv?.FlowId;
+        }
+
         // ── 3. Insertar MessageDeliveryEvent ──────────────────────────────────
         var deliveryEvent = new MessageDeliveryEvent
         {
@@ -111,10 +125,8 @@ public sealed class MessageStatusService : IMessageStatusService
             ConversationId    = message?.ConversationId,
             ProviderMessageId = request.MessageSid,
             Status            = request.MessageStatus,
-            // P1: Propagar TemplateId y MessageVariantId desde el Message padre.
-            // FlowId no está disponible en la entidad Message actual;
-            // se añadirá cuando se extienda la entidad en un sprint futuro.
-            FlowId            = null,   // pendiente: añadir FlowId a Message (sprint plantillas)
+            // N-P1-03: FlowId propagado desde Conversation padre.
+            FlowId            = flowId,
             TemplateId        = message?.TemplateId,
             // MessageVariant (string key) y MessageVariantId FK propagados si disponibles
             MessageVariant    = null,   // campo string legacy; Message usa MessageVariantId FK
@@ -153,11 +165,15 @@ public sealed class MessageStatusService : IMessageStatusService
                     ProviderMessageId = request.MessageSid,
                     EventType         = variantEventType,
                     ElapsedMs         = elapsedMs,
+                    // N-P2-05: usar ProviderMessageId como correlationId es correcto
+                    // (es el SID de Twilio, único por mensaje y disponible en todos
+                    //  los callbacks de estado para este mensaje).
                     CorrelationId     = request.MessageSid,
                     Metadata          = System.Text.Json.JsonSerializer.Serialize(new
                     {
                         twilio_status = request.MessageStatus,
                         channel       = request.Channel,
+                        flow_id       = flowId,   // N-P1-03: añadir flow_id al metadata del evento
                     }),
                 }, ct);
             }
