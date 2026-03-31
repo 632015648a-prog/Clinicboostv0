@@ -569,8 +569,8 @@ CREATE TABLE IF NOT EXISTS automation_runs (
   started_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   finished_at       TIMESTAMPTZ,
   duration_ms       INTEGER     GENERATED ALWAYS AS (
-                      EXTRACT(EPOCH FROM (finished_at - started_at)) * 1000
-                    )::INTEGER STORED,
+                      CAST(EXTRACT(EPOCH FROM (finished_at - started_at)) * 1000 AS INTEGER)
+                    ) STORED,
 
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
