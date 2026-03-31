@@ -14,7 +14,7 @@ VALUES (
   '+34600000001',
   1,  -- Starter
   TRUE,
-  NOW() AT TIME ZONE 'UTC',
+  NOW(),
   'v1.0'
 )
 ON CONFLICT (slug) DO NOTHING;
@@ -33,8 +33,8 @@ SELECT
   'a1b2c3d4-0000-0000-0000-000000000001',
   p.id,
   'Dr. Ramírez',
-  NOW() AT TIME ZONE 'UTC' + INTERVAL '1 day',
-  NOW() AT TIME ZONE 'UTC' + INTERVAL '1 day' + INTERVAL '1 hour',
+  NOW() + INTERVAL '1 day',
+  NOW() + INTERVAL '1 day' + INTERVAL '1 hour',
   1,     -- Scheduled
   2,     -- WhatsApp
   TRUE

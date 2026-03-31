@@ -24,8 +24,6 @@
 -- · Inmutable: INSERT only; UPDATE y DELETE revocados a app_user.
 -- ============================================================================
 
-BEGIN;
-
 -- ── 1. Evolucion de la tabla processed_events ────────────────────────────────
 
 -- 1a. Añadir tenant_id (nullable — véase diseño de seguridad arriba)
@@ -217,4 +215,4 @@ BEGIN
 
 END $$;
 
-COMMIT;
+-- (el runner de Supabase gestiona la transacción externamente)
