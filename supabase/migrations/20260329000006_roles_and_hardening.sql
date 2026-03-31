@@ -166,13 +166,13 @@ EXCEPTION WHEN insufficient_privilege THEN
   RAISE NOTICE 'SKIP: ALTER ROLE app_user NOSUPERUSER... — insufficient_privilege (expected in local dev)';
 END $$;
 
-DO $$
-BEGIN
-  -- Revocar SET SESSION AUTHORIZATION (evita cambio de rol en runtime)
-  REVOKE SET SESSION AUTHORIZATION FROM app_user;
-EXCEPTION WHEN insufficient_privilege THEN
-  RAISE NOTICE 'SKIP: REVOKE SET SESSION AUTHORIZATION FROM app_user — insufficient_privilege (expected in local dev)';
-END $$;
+-- NOTA (3.3): No existe un "REVOKE SET SESSION AUTHORIZATION" en PostgreSQL;
+-- esa no es una sentencia SQL válida. La protección real se consigue mediante
+-- dos mecanismos ya aplicados arriba:
+--   a) app_user tiene NOLOGIN y NOSUPERUSER → no puede SET SESSION AUTHORIZATION
+--      sobre otro rol privilegiado (solo SUPERUSER puede hacerlo).
+--   b) Las políticas RLS + NOBYPASSRLS garantizan que aunque cambie de rol
+--      dentro de su sesión, no escape del filtro de tenant_id.
 
 DO $$
 BEGIN
