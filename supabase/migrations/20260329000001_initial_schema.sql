@@ -25,7 +25,7 @@ END $$;
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
-  NEW.updated_at = NOW() AT TIME ZONE 'UTC';
+  NEW.updated_at = NOW();
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -43,8 +43,8 @@ CREATE TABLE IF NOT EXISTS tenants (
   -- RGPD
   consent_accepted_at TIMESTAMPTZ,
   consent_version     TEXT,
-  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC',
-  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC'
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TRIGGER trg_tenants_updated_at
@@ -65,8 +65,8 @@ CREATE TABLE IF NOT EXISTS patients (
   rgpd_consent_at       TIMESTAMPTZ,
   -- Reactivación (Flow 06)
   last_appointment_at   TIMESTAMPTZ,
-  created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC',
-  updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC',
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (tenant_id, phone)
 );
 
@@ -98,8 +98,8 @@ CREATE TABLE IF NOT EXISTS appointments (
   no_show             BOOLEAN     NOT NULL DEFAULT FALSE,
   -- Reprogramación (Flow 07)
   rescheduled_from_id UUID        REFERENCES appointments(id),
-  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC',
-  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC'
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_appointments_tenant_id   ON appointments(tenant_id);
@@ -116,7 +116,7 @@ CREATE TABLE IF NOT EXISTS processed_events (
   id            UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
   event_type    TEXT        NOT NULL,   -- "twilio.message", "supabase.auth.signup", etc.
   event_id      TEXT        NOT NULL,   -- ID del evento según el proveedor externo
-  processed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC',
+  processed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   metadata      JSONB,
   UNIQUE (event_type, event_id)         -- Garantía de idempotencia
 );
@@ -133,7 +133,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   old_values  JSONB,
   new_values  JSONB,
   actor_id    UUID,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC'
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_audit_logs_tenant_id   ON audit_logs(tenant_id);

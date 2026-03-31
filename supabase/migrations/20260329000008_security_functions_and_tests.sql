@@ -289,7 +289,7 @@ CREATE TABLE IF NOT EXISTS migration_tests (
   test_name     TEXT        NOT NULL,
   result        TEXT        NOT NULL CHECK (result IN ('passed', 'failed', 'skipped')),
   message       TEXT,
-  executed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC'
+  executed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 COMMENT ON TABLE migration_tests IS

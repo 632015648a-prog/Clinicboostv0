@@ -50,8 +50,8 @@ CREATE TABLE IF NOT EXISTS tenant_users (
   -- Auditoría de último acceso (útil para detección de cuentas abandonadas)
   last_login_at TIMESTAMPTZ,
 
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC',
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC',
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
   -- Un auth_user solo puede tener un rol por tenant
   UNIQUE (tenant_id, auth_user_id)
@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS patient_consents (
   -- Texto literal del aviso legal presentado (hash SHA-256)
   legal_text_hash TEXT,
 
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC'
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
   -- Sin updated_at: este registro es inmutable
 );
 
@@ -155,8 +155,8 @@ CREATE TABLE IF NOT EXISTS calendar_connections (
   is_primary        BOOLEAN     NOT NULL DEFAULT FALSE,  -- calendario principal del tenant
   is_active         BOOLEAN     NOT NULL DEFAULT TRUE,
 
-  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC',
-  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC'
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_calendar_connections_tenant_id   ON calendar_connections(tenant_id);
@@ -209,7 +209,7 @@ CREATE TABLE IF NOT EXISTS appointment_events (
   correlation_id   UUID,
   flow_id          TEXT,                       -- 'flow_01', 'flow_03', etc.
 
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC'
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
   -- Sin updated_at: inmutable
 );
 
@@ -275,8 +275,8 @@ CREATE TABLE IF NOT EXISTS conversations (
   session_expires_at TIMESTAMPTZ,
 
   resolved_at       TIMESTAMPTZ,
-  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC',
-  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC'
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_conversations_tenant_id      ON conversations(tenant_id);
@@ -349,7 +349,7 @@ CREATE TABLE IF NOT EXISTS messages (
   sent_at           TIMESTAMPTZ,
   delivered_at      TIMESTAMPTZ,
   read_at           TIMESTAMPTZ,
-  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC'
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
   -- Sin updated_at: inmutable
 );
 
@@ -407,8 +407,8 @@ CREATE TABLE IF NOT EXISTS waitlist_entries (
   -- Cuántas veces se ha ofrecido un hueco (para evitar spam)
   offer_count       INTEGER     NOT NULL DEFAULT 0,
 
-  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC',
-  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC'
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_waitlist_tenant_status      ON waitlist_entries(tenant_id, status, priority)
@@ -459,8 +459,8 @@ CREATE TABLE IF NOT EXISTS rule_configs (
   description TEXT,                             -- documentación de la regla
 
   is_active   BOOLEAN     NOT NULL DEFAULT TRUE,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC',
-  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
   UNIQUE (tenant_id, flow_id, rule_key)
 );
@@ -513,7 +513,7 @@ CREATE TABLE IF NOT EXISTS revenue_events (
   -- Metadatos de atribución
   attribution_data JSONB       NOT NULL DEFAULT '{}',
 
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC'
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
   -- Sin updated_at: inmutable
 );
 
@@ -566,13 +566,13 @@ CREATE TABLE IF NOT EXISTS automation_runs (
   -- Trazabilidad
   correlation_id    UUID,
 
-  started_at        TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC',
+  started_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   finished_at       TIMESTAMPTZ,
   duration_ms       INTEGER     GENERATED ALWAYS AS (
                       EXTRACT(EPOCH FROM (finished_at - started_at)) * 1000
                     )::INTEGER STORED,
 
-  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC'
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_automation_runs_tenant_flow   ON automation_runs(tenant_id, flow_id, started_at DESC);
@@ -635,7 +635,7 @@ CREATE TABLE IF NOT EXISTS webhook_events (
   -- Trazabilidad
   correlation_id  UUID,
 
-  received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW() AT TIME ZONE 'UTC',
+  received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   processed_at    TIMESTAMPTZ
   -- Sin updated_at porque el campo status se actualiza directamente
 );
