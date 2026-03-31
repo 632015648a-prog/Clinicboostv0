@@ -124,6 +124,10 @@ public sealed class AppointmentService : IAppointmentService
             therapists = ["Disponible"];
 
         // Generar slots en horario laboral (UTC, con conversión desde timezone del tenant)
+        // P1: horarios leídos de RuleConfig para flexibilidad por tenant.
+        var (workStartH, workEndWeekdayH, workEndSaturdayH) =
+            await GetWorkHoursAsync(tenantId, ct);
+
         var slots = new List<AvailableSlot>();
 
         for (var day = dateFrom; day <= dateTo && slots.Count < 20; day = day.AddDays(1))
@@ -131,14 +135,14 @@ public sealed class AppointmentService : IAppointmentService
             var dayOfWeek = day.DayOfWeek;
             if (dayOfWeek == DayOfWeek.Sunday) continue;
 
-            // Sábados: 09:00–14:00; L-V: 09:00–18:00 (en hora local del tenant)
+            // Sábados y L-V: horas laborables configurables por tenant (RuleConfig)
             var workEnd = dayOfWeek == DayOfWeek.Saturday
-                ? new TimeOnly(14, 0)
-                : new TimeOnly(18, 0);
+                ? new TimeOnly(workEndSaturdayH, 0)
+                : new TimeOnly(workEndWeekdayH, 0);
 
             foreach (var therapist in therapists)
             {
-                for (var time = new TimeOnly(9, 0);
+                for (var time = new TimeOnly(workStartH, 0);
                      time.Add(TimeSpan.FromMinutes(durationMin)) <= workEnd;
                      time = time.Add(TimeSpan.FromMinutes(durationMin)))
                 {
@@ -680,8 +684,39 @@ public sealed class AppointmentService : IAppointmentService
     // Helpers privados
     // ══════════════════════════════════════════════════════════════════════
 
-    private async Task<string> GetTenantTimeZoneAsync(Guid tenantId, CancellationToken ct)
+    /// <summary>
+    /// Lee los límites de horario laboral desde RuleConfig del tenant.
+    /// Claves: work_start_hour (default 9), work_end_weekday_hour (default 18),
+    ///         work_end_saturday_hour (default 14).
+    /// Permite personalizar la clínica sin redeployar código.
+    /// </summary>
+    private async Task<(int StartH, int EndWeekdayH, int EndSaturdayH)>
+        GetWorkHoursAsync(Guid tenantId, CancellationToken ct)
     {
+        var rules = await _db.RuleConfigs
+            .AsNoTracking()
+            .Where(r =>
+                r.TenantId == tenantId &&
+                r.FlowId   == "global" &&
+                r.IsActive  &&
+                (r.RuleKey == "work_start_hour"        ||
+                 r.RuleKey == "work_end_weekday_hour"   ||
+                 r.RuleKey == "work_end_saturday_hour"))
+            .Select(r => new { r.RuleKey, r.RuleValue })
+            .ToListAsync(ct);
+
+        int Get(string key, int defaultVal)
+        {
+            var v = rules.FirstOrDefault(r => r.RuleKey == key)?.RuleValue;
+            return v is not null && int.TryParse(v, out var h) && h is >= 0 and <= 23 ? h : defaultVal;
+        }
+
+        return (Get("work_start_hour", 9),
+                Get("work_end_weekday_hour", 18),
+                Get("work_end_saturday_hour", 14));
+    }
+
+    private async Task<string> GetTenantTimeZoneAsync(Guid tenantId, CancellationToken ct)    {
         var tz = await _db.Tenants
             .Where(t => t.Id == tenantId)
             .Select(t => t.TimeZone)

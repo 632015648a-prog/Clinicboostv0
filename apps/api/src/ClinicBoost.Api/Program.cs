@@ -1,6 +1,7 @@
 using ClinicBoost.Api.Infrastructure.Extensions;
 using ClinicBoost.Api.Features.Health;
 using ClinicBoost.Api.Infrastructure.Middleware;
+using Microsoft.AspNetCore.HttpOverrides;
 using Scalar.AspNetCore;
 using Serilog;
 
@@ -24,6 +25,21 @@ try
             "[T:{TenantId}] [U:{UserId}] [R:{UserRole}] " +
             "{Message:lj}{NewLine}{Exception}"));
 
+    // ─── ForwardedHeaders (P0: IP real detrás de proxy/load balancer) ─────────
+    // Configurar KnownProxies/KnownNetworks en producción vía appsettings.
+    // En desarrollo, ForwardLimit=1 acepta el primer proxy de confianza (Docker/Nginx).
+    builder.Services.Configure<ForwardedHeadersOptions>(opts =>
+    {
+        opts.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+        // Limpiar redes/proxies por defecto (solo loopback) para evitar spoofing.
+        opts.KnownNetworks.Clear();
+        opts.KnownProxies.Clear();
+        // Añadir loopback explícito
+        opts.KnownProxies.Add(System.Net.IPAddress.Loopback);
+        opts.KnownProxies.Add(System.Net.IPAddress.IPv6Loopback);
+        opts.ForwardLimit = 1; // Confiamos en 1 capa de proxy (Nginx/Cloudflare)
+    });
+
     // ─── Infrastructure ───────────────────────────────────────────────────────
     // Orden importante: Database registra TenantContext + interceptor antes que Auth
     builder.Services.AddClinicBoostDatabase(builder.Configuration);
@@ -44,6 +60,7 @@ try
     // ─── Middleware pipeline ──────────────────────────────────────────────────
     // ORDEN CRÍTICO — no reordenar sin revisar ADR-005:
     //
+    //  0. ForwardedHeaders       (PRIMERO: resuelve IP real del cliente)
     //  1. Serilog request logging  (antes de todo para capturar toda la petición)
     //  2. CORS                     (preflight OPTIONS antes de auth)
     //  3. UseAuthentication        (valida JWT y popula ctx.User)
@@ -51,6 +68,9 @@ try
     //  5. UseTenantMiddleware      (extrae claims → ITenantContext)
     //  6. TenantAuthorization      (valida rol mínimo por endpoint)
     //  7. Endpoints
+
+    // P0: resolver IP real antes de cualquier log o validación de seguridad
+    app.UseForwardedHeaders();
 
     app.UseSerilogRequestLogging(opts =>
     {

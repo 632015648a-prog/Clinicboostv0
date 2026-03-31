@@ -67,7 +67,10 @@ public sealed class RefreshTokenService : IRefreshTokenService
         string? ipAddress = null, string? userAgent = null)
     {
         var hash     = HashToken(plainToken);
-        var existing = await _db.RefreshTokens.FirstOrDefaultAsync(t => t.TokenHash == hash);
+        // P0: buscar por hash + estado no-revocado; TenantId se valida post-lookup.
+        // El hash es criptográficamente seguro (SHA-256) y globalmente único.
+        var existing = await _db.RefreshTokens.FirstOrDefaultAsync(
+            t => t.TokenHash == hash && !t.IsRevoked);
 
         if (existing is null)
             return new RotateTokenResult(false, Error: "not_found");
@@ -79,7 +82,7 @@ public sealed class RefreshTokenService : IRefreshTokenService
         if (existing.IsRevoked || existing.UsedAt is not null)
         {
             _logger.LogWarning("Token reuse detected for family {FamilyId}", existing.FamilyId);
-            await RevokeFamilyInternalAsync(existing.FamilyId, "breach");
+            await RevokeFamilyInternalAsync(existing.FamilyId, existing.TenantId, "breach");
             await _audit.RecordAuthAsync(
                 existing.TenantId, "auth.token_reuse_detected",
                 outcome: "failure", actorId: existing.UserId,
@@ -128,7 +131,9 @@ public sealed class RefreshTokenService : IRefreshTokenService
     public async Task<bool> RevokeAsync(string plainToken, string reason = "logout")
     {
         var hash  = HashToken(plainToken);
-        var token = await _db.RefreshTokens.FirstOrDefaultAsync(t => t.TokenHash == hash);
+        // P0: buscar por hash; la validación de tenant se hace implicitamente al chequear IsRevoked.
+        var token = await _db.RefreshTokens.FirstOrDefaultAsync(
+            t => t.TokenHash == hash && !t.IsRevoked);
         if (token is null || token.IsRevoked) return false;
 
         token.IsRevoked    = true;
@@ -179,7 +184,7 @@ public sealed class RefreshTokenService : IRefreshTokenService
     }
 
     public async Task<int> RevokeFamilyAsync(Guid familyId, string reason = "breach")
-        => await RevokeFamilyInternalAsync(familyId, reason);
+        => await RevokeFamilyInternalAsync(familyId, tenantId: null, reason);
 
     // ── Sessions ───────────────────────────────────────────────────────────────
 
@@ -199,23 +204,33 @@ public sealed class RefreshTokenService : IRefreshTokenService
 
     // ── Helpers ────────────────────────────────────────────────────────────────
 
-    private async Task<int> RevokeFamilyInternalAsync(Guid familyId, string reason)
+    private async Task<int> RevokeFamilyInternalAsync(Guid familyId, Guid? tenantId, string reason)
     {
         int count = 0;
         try
         {
-            // Revocar tokens no revocados aún
-            count = await _db.RefreshTokens
-                .Where(t => t.FamilyId == familyId && !t.IsRevoked)
+            // P0: Revocar tokens del family SOLO del mismo tenant (si tenantId disponible).
+            // Previene cross-tenant revocation — el familyId solo puede pertenecer a un tenant.
+            var baseQuery = _db.RefreshTokens
+                .Where(t => t.FamilyId == familyId);
+            if (tenantId.HasValue)
+                baseQuery = baseQuery.Where(t => t.TenantId == tenantId.Value);
+
+            count = await baseQuery
+                .Where(t => !t.IsRevoked)
                 .ExecuteUpdateAsync(s => s
                     .SetProperty(t => t.IsRevoked,     true)
                     .SetProperty(t => t.IsCompromised, true)
                     .SetProperty(t => t.RevokedAt,     DateTimeOffset.UtcNow)
                     .SetProperty(t => t.RevokedReason, reason));
 
-            // Marcar también los ya revocados como comprometidos
-            await _db.RefreshTokens
-                .Where(t => t.FamilyId == familyId && t.IsRevoked && !t.IsCompromised)
+            // Marcar también los ya revocados como comprometidos (mismo scope tenant)
+            var alreadyRevokedQuery = _db.RefreshTokens
+                .Where(t => t.FamilyId == familyId && t.IsRevoked && !t.IsCompromised);
+            if (tenantId.HasValue)
+                alreadyRevokedQuery = alreadyRevokedQuery.Where(t => t.TenantId == tenantId.Value);
+
+            await alreadyRevokedQuery
                 .ExecuteUpdateAsync(s => s.SetProperty(t => t.IsCompromised, true));
         }
         catch (InvalidOperationException)

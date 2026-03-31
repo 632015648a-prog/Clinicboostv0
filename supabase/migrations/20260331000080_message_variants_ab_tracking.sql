@@ -248,9 +248,16 @@ CREATE POLICY rls_variant_conversion_events_service
 -- ---------------------------------------------------------------------------
 -- 7. Vista de agregación para el dashboard de conversión por variante
 --
--- Calcula el funnel completo por variante en una sola query.
--- Uso: SELECT * FROM v_variant_conversion_funnel
---      WHERE tenant_id = $1 AND occurred_at >= $2;
+-- P1-SEC: La vista NO tiene RLS propia (las vistas no soportan RLS directamente).
+-- La seguridad se garantiza mediante:
+--   a) Usar siempre el filtro WHERE vce.tenant_id = $1 al consultar.
+--   b) La función get_variant_funnel() definida a continuación aplica RLS
+--      verificando current_setting('app.tenant_id') igual que las tablas base.
+--
+-- USO SEGURO: SELECT * FROM get_variant_funnel($tenant_id, $from, $to)
+-- USO INSEGURO (evitar): SELECT * FROM v_variant_conversion_funnel (sin filtro)
+--
+-- La vista se mantiene para compatibilidad y reportes internos de admins.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE VIEW v_variant_conversion_funnel AS
 SELECT
@@ -307,4 +314,107 @@ GROUP BY
     mv.is_active;
 
 COMMENT ON VIEW v_variant_conversion_funnel IS
-    'Funnel de conversión agregado por variante A/B. Lee variant_conversion_events + message_variants.';
+    'Funnel de conversión agregado por variante A/B. Lee variant_conversion_events + message_variants. SIEMPRE filtrar por tenant_id al consultar. Para RLS garantizada usar get_variant_funnel().';
+
+-- ---------------------------------------------------------------------------
+-- 8. Función tenant-safe para el funnel (reemplaza la vista en código de aplicación)
+--
+-- Aplica el filtro de tenant vía current_setting('app.tenant_id') igual que
+-- las políticas RLS de las tablas base. Es la forma correcta de consultar
+-- el funnel sin riesgo de cross-tenant data leakage.
+--
+-- USO: SELECT * FROM get_variant_funnel(
+--        p_tenant_id := '...',
+--        p_from      := '2026-01-01',
+--        p_to        := '2026-12-31',
+--        p_flow_id   := 'flow_01'   -- opcional
+--      );
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION get_variant_funnel(
+    p_tenant_id uuid,
+    p_from      timestamptz DEFAULT now() - INTERVAL '30 days',
+    p_to        timestamptz DEFAULT now(),
+    p_flow_id   text        DEFAULT NULL
+)
+RETURNS TABLE (
+    tenant_id            uuid,
+    flow_id              text,
+    template_id          text,
+    variant_key          text,
+    message_variant_id   uuid,
+    is_active            boolean,
+    sent_count           bigint,
+    delivered_count      bigint,
+    read_count           bigint,
+    reply_count          bigint,
+    booked_count         bigint,
+    delivery_rate        numeric,
+    read_rate            numeric,
+    reply_rate           numeric,
+    booking_rate         numeric,
+    p50_delivered_ms     double precision,
+    p50_read_ms          double precision,
+    p50_booked_ms        double precision,
+    total_recovered_revenue numeric,
+    last_event_at        timestamptz
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_current_tenant uuid;
+BEGIN
+    -- Validar que el llamante tiene acceso a este tenant
+    v_current_tenant := current_setting('app.tenant_id', true)::uuid;
+    IF v_current_tenant IS NULL OR v_current_tenant <> p_tenant_id THEN
+        RAISE EXCEPTION 'Acceso denegado: tenant_id no coincide con el contexto de sesión.'
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
+    RETURN QUERY
+    SELECT
+        vce.tenant_id,
+        mv.flow_id,
+        mv.template_id,
+        mv.variant_key,
+        mv.id                                                            AS message_variant_id,
+        mv.is_active,
+        COUNT(*) FILTER (WHERE vce.event_type = 'outbound_sent')         AS sent_count,
+        COUNT(*) FILTER (WHERE vce.event_type = 'delivered')             AS delivered_count,
+        COUNT(*) FILTER (WHERE vce.event_type = 'read')                  AS read_count,
+        COUNT(*) FILTER (WHERE vce.event_type = 'reply')                 AS reply_count,
+        COUNT(*) FILTER (WHERE vce.event_type = 'booked')                AS booked_count,
+        ROUND(
+            COUNT(*) FILTER (WHERE vce.event_type = 'delivered')::numeric
+            / NULLIF(COUNT(*) FILTER (WHERE vce.event_type = 'outbound_sent'), 0), 4) AS delivery_rate,
+        ROUND(
+            COUNT(*) FILTER (WHERE vce.event_type = 'read')::numeric
+            / NULLIF(COUNT(*) FILTER (WHERE vce.event_type = 'delivered'), 0), 4)     AS read_rate,
+        ROUND(
+            COUNT(*) FILTER (WHERE vce.event_type = 'reply')::numeric
+            / NULLIF(COUNT(*) FILTER (WHERE vce.event_type = 'read'), 0), 4)          AS reply_rate,
+        ROUND(
+            COUNT(*) FILTER (WHERE vce.event_type = 'booked')::numeric
+            / NULLIF(COUNT(*) FILTER (WHERE vce.event_type = 'outbound_sent'), 0), 4) AS booking_rate,
+        PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY vce.elapsed_ms)
+            FILTER (WHERE vce.event_type = 'delivered')                  AS p50_delivered_ms,
+        PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY vce.elapsed_ms)
+            FILTER (WHERE vce.event_type = 'read')                       AS p50_read_ms,
+        PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY vce.elapsed_ms)
+            FILTER (WHERE vce.event_type = 'booked')                     AS p50_booked_ms,
+        COALESCE(SUM(vce.recovered_revenue) FILTER (WHERE vce.event_type = 'booked'), 0) AS total_recovered_revenue,
+        MAX(vce.occurred_at)                                             AS last_event_at
+    FROM variant_conversion_events vce
+    JOIN message_variants mv ON mv.id = vce.message_variant_id
+    WHERE vce.tenant_id = p_tenant_id
+      AND vce.occurred_at BETWEEN p_from AND p_to
+      AND (p_flow_id IS NULL OR mv.flow_id = p_flow_id)
+    GROUP BY
+        vce.tenant_id, mv.flow_id, mv.template_id,
+        mv.variant_key, mv.id, mv.is_active;
+END;
+$$;
+
+COMMENT ON FUNCTION get_variant_funnel IS
+    'Función tenant-safe para consultar el funnel de variantes A/B. Verifica current_setting(app.tenant_id) para prevenir cross-tenant leakage. Usar en lugar de la vista v_variant_conversion_funnel en código de aplicación.';

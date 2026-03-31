@@ -3,6 +3,7 @@ using ClinicBoost.Api.Features.Variants;
 using ClinicBoost.Api.Infrastructure.Database;
 using ClinicBoost.Api.Infrastructure.Idempotency;
 using ClinicBoost.Domain.Appointments;
+using ClinicBoost.Domain.Conversations;
 using ClinicBoost.Domain.Patients;
 using ClinicBoost.Domain.Revenue;
 using Microsoft.EntityFrameworkCore;
@@ -141,6 +142,52 @@ public sealed class Flow01Orchestrator
         // ── 3. Resolver o crear paciente ──────────────────────────────────────
         var patient = await ResolveOrCreatePatientAsync(
             tenantId, callerPhone, ct);
+
+        // ── 3b. Cooldown: evitar spam si ya recibió un WA reciente ────────────
+        // P1: si existe un outbound de flow_01 enviado en los últimos N minutos
+        // al mismo paciente, se omite el envío para prevenir spam y cumplir RGPD.
+        const int CooldownMinutes = 60; // configurable vía RuleConfig en sprint futuro
+        var cooldownCutoff = callReceivedAt.AddMinutes(-CooldownMinutes);
+
+        // JOIN Message → Conversation para filtrar por FlowId (Message no tiene FlowId propio)
+        var recentOutbound = await (
+            from m in _db.Messages
+            join c in _db.Conversations on m.ConversationId equals c.Id
+            where m.TenantId  == tenantId       &&
+                  c.TenantId  == tenantId        &&
+                  c.PatientId == patient.Id      &&
+                  c.FlowId    == "flow_01"       &&
+                  m.Direction == "outbound"      &&
+                  m.CreatedAt >= cooldownCutoff  &&
+                  m.Status    != "failed"
+            select m.Id
+        ).AnyAsync(ct);
+
+        if (recentOutbound)
+        {
+            _logger.LogInformation(
+                "[Flow01] Cooldown activo: outbound reciente encontrado. " +
+                "PatientId={PatientId} CooldownMin={Min} TenantId={TenantId}. " +
+                "Se omite el envío para evitar spam.",
+                patient.Id, CooldownMinutes, tenantId);
+
+            await _metrics.RecordAsync(new FlowMetricsEvent
+            {
+                TenantId      = tenantId,
+                PatientId     = patient.Id,
+                FlowId        = "flow_01",
+                MetricType    = "flow_skipped",
+                CorrelationId = correlationId,
+                Metadata      = JsonSerializer.Serialize(new
+                {
+                    reason           = "cooldown_active",
+                    cooldown_minutes = CooldownMinutes,
+                }),
+            }, ct);
+
+            return Flow01Result.Skipped(patient.Id,
+                $"Cooldown activo: mensaje reciente enviado en los últimos {CooldownMinutes} min.");
+        }
 
         // ── 4. Verificar consentimiento RGPD ──────────────────────────────────
         if (!patient.RgpdConsent)

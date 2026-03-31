@@ -112,8 +112,13 @@ public static class AuthEndpoints
         {
             try
             {
-                using var reader = new System.IO.StreamReader(ctx.Request.Body);
-                var body = await reader.ReadToEndAsync();
+                // P2: limitar cuerpo a 4 KB para prevenir DoS/abuso del endpoint público
+                const int MaxBodyBytes = 4096;
+                using var reader    = new System.IO.StreamReader(ctx.Request.Body);
+                var buffer          = new char[MaxBodyBytes + 1];
+                int charsRead       = await reader.ReadAsync(buffer, 0, buffer.Length);
+                var body            = new string(buffer, 0, Math.Min(charsRead, MaxBodyBytes));
+
                 await audit.RecordSecurityAsync(
                     Guid.Empty, "csp.violation",
                     ipAddress: GetClientIp(ctx),

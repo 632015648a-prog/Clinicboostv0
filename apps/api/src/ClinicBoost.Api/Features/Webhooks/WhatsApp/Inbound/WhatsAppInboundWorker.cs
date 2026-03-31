@@ -231,8 +231,11 @@ public sealed class WhatsAppInboundWorker : BackgroundService
             // ── 7. Enrutar al agente conversacional ───────────────────────────
             var agent = sp.GetRequiredService<IConversationalAgent>();
 
+            // P0: filtro TenantId obligatorio para garantizar aislamiento multi-tenant (ADR-001)
             var recentMessages = await db.Messages
-                .Where(m => m.ConversationId == conversation.Id)
+                .Where(m =>
+                    m.TenantId       == job.TenantId    &&
+                    m.ConversationId == conversation.Id)
                 .OrderByDescending(m => m.CreatedAt)
                 .Take(15)
                 .OrderBy(m => m.CreatedAt)
@@ -290,7 +293,55 @@ public sealed class WhatsAppInboundWorker : BackgroundService
                 agentResult.Action, agentResult.WasBlocked,
                 conversation.Id, patient.Id, job.MessageSid);
 
-            // TODO (sprint envío): encolar respuesta para Twilio si Action == SendMessage.
+            // ── Enviar respuesta del agente si Action == SendMessage ──────────
+            if (agentResult.Action == AgentAction.SendMessage &&
+                !string.IsNullOrWhiteSpace(agentResult.ResponseText))
+            {
+                var sender = sp.GetRequiredService<ClinicBoost.Api.Features.Flow01.IOutboundMessageSender>();
+
+                // Obtener el número de la clínica desde la entidad Tenant ya cargada
+                var clinicPhone = tenantEntity?.WhatsAppNumber;
+
+                if (!string.IsNullOrEmpty(clinicPhone))
+                {
+                    var sendReq = new ClinicBoost.Api.Features.Flow01.OutboundMessageRequest
+                    {
+                        ToPhone        = $"whatsapp:{job.CallerPhone}",
+                        FromPhone      = $"whatsapp:{clinicPhone}",
+                        Channel        = "whatsapp",
+                        Body           = agentResult.ResponseText,
+                        FlowId         = "flow_00",
+                        TenantId       = job.TenantId,
+                        PatientId      = patient.Id,
+                        ConversationId = conversation.Id,
+                        CorrelationId  = job.CorrelationId,
+                    };
+
+                    var sendResult = await sender.SendAsync(sendReq, ct);
+
+                    if (sendResult.IsSuccess)
+                    {
+                        _logger.LogInformation(
+                            "[WAWorker] Respuesta del agente enviada. " +
+                            "TwilioSid={Sid} ConvId={ConvId} PatientId={PatientId}",
+                            sendResult.TwilioSid, conversation.Id, patient.Id);
+                    }
+                    else
+                    {
+                        _logger.LogWarning(
+                            "[WAWorker] Fallo al enviar respuesta del agente. " +
+                            "ErrorCode={Code} ConvId={ConvId}",
+                            sendResult.ErrorCode, conversation.Id);
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "[WAWorker] No se encontró WhatsAppNumber para el tenant. " +
+                        "TenantId={TenantId}. Respuesta del agente no enviada.",
+                        job.TenantId);
+                }
+            }
 
             // ── 8. Completar AutomationRun ────────────────────────────────────
             run.ItemsProcessed = 1;

@@ -111,11 +111,14 @@ public sealed class MessageStatusService : IMessageStatusService
             ConversationId    = message?.ConversationId,
             ProviderMessageId = request.MessageSid,
             Status            = request.MessageStatus,
-            // Dimensiones de agrupación extraídas del Message padre.
-            // Null cuando el Message no existe en nuestra BD.
-            FlowId            = null,        // TODO: añadir FlowId a Message en sprint de plantillas
+            // P1: Propagar TemplateId y MessageVariantId desde el Message padre.
+            // FlowId no está disponible en la entidad Message actual;
+            // se añadirá cuando se extienda la entidad en un sprint futuro.
+            FlowId            = null,   // pendiente: añadir FlowId a Message (sprint plantillas)
             TemplateId        = message?.TemplateId,
-            MessageVariant    = null,        // TODO: añadir MessageVariant a Message en sprint A/B
+            // MessageVariant (string key) y MessageVariantId FK propagados si disponibles
+            MessageVariant    = null,   // campo string legacy; Message usa MessageVariantId FK
+            MessageVariantId  = message?.MessageVariantId,
             Channel           = request.Channel,
             ErrorCode         = request.ErrorCode,
             ErrorMessage      = request.ErrorMessage,

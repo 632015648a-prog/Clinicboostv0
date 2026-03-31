@@ -3,6 +3,7 @@ using ClinicBoost.Api.Infrastructure.Database;
 using ClinicBoost.Api.Infrastructure.Tenants;
 using ClinicBoost.Domain.Automation;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace ClinicBoost.Api.Features.Webhooks.Voice.MissedCall;
 
@@ -51,15 +52,18 @@ public sealed class MissedCallWorker : BackgroundService
     private readonly IMissedCallJobQueue       _queue;
     private readonly IServiceScopeFactory      _scopeFactory;
     private readonly ILogger<MissedCallWorker> _logger;
+    private readonly Flow01Options             _flow01Opts;
 
     public MissedCallWorker(
         IMissedCallJobQueue        queue,
         IServiceScopeFactory       scopeFactory,
-        ILogger<MissedCallWorker>  logger)
+        ILogger<MissedCallWorker>  logger,
+        IOptions<Flow01Options>    flow01Opts)
     {
         _queue        = queue;
         _scopeFactory = scopeFactory;
         _logger       = logger;
+        _flow01Opts   = flow01Opts.Value;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -141,6 +145,25 @@ public sealed class MissedCallWorker : BackgroundService
 
         try
         {
+            // ── P1: Verificar ventana máxima de tiempo ────────────────────────
+            // Si el job lleva más de MaxDelayMinutes esperando, no tiene sentido
+            // enviar el WhatsApp de recovery (experiencia degradada).
+            var elapsedSinceCall = DateTimeOffset.UtcNow - job.ReceivedAt;
+            if (elapsedSinceCall.TotalMinutes > _flow01Opts.MaxDelayMinutes)
+            {
+                _logger.LogWarning(
+                    "[MissedCallWorker] Job expirado. ElapsedMin={Min} MaxDelayMin={Max} " +
+                    "CallSid={CallSid} TenantId={TenantId}. Se omite el envío.",
+                    (int)elapsedSinceCall.TotalMinutes, _flow01Opts.MaxDelayMinutes,
+                    job.CallSid, job.TenantId);
+
+                run.ItemsProcessed = 1;
+                run.ItemsFailed    = 0;
+                await CompleteRunAsync(db, run, "skipped",
+                    $"Job expirado: {(int)elapsedSinceCall.TotalMinutes}min > MaxDelay:{_flow01Opts.MaxDelayMinutes}min", ct);
+                return;
+            }
+
             // ── Delegar en Flow01Orchestrator ─────────────────────────────────
             var orchestrator = sp.GetRequiredService<Flow01Orchestrator>();
 

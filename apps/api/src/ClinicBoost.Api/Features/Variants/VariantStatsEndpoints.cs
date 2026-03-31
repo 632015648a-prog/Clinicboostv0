@@ -1,5 +1,6 @@
 using ClinicBoost.Api.Infrastructure.Tenants;
 using Microsoft.AspNetCore.Mvc;
+using System.Text.RegularExpressions;
 
 namespace ClinicBoost.Api.Features.Variants;
 
@@ -43,6 +44,11 @@ namespace ClinicBoost.Api.Features.Variants;
 /// </summary>
 public static class VariantStatsEndpoints
 {
+    // Regex para validar FlowId: flow_00 .. flow_07 (alineado con constraint SQL)
+    private static readonly Regex FlowIdRegex = new(@"^flow_0[0-7]$", RegexOptions.Compiled);
+    // Rango máximo permitido en queries de stats para proteger rendimiento
+    private const int MaxRangeDays = 365;
+
     public static IEndpointRouteBuilder MapVariantEndpoints(
         this IEndpointRouteBuilder routes)
     {
@@ -63,6 +69,10 @@ public static class VariantStatsEndpoints
 
             if (rangeFrom >= rangeTo)
                 return Results.BadRequest("'from' debe ser anterior a 'to'.");
+
+            // P1: limitar rango máximo para proteger rendimiento
+            if ((rangeTo - rangeFrom).TotalDays > MaxRangeDays)
+                return Results.BadRequest($"El rango máximo permitido es {MaxRangeDays} días.");
 
             var stats = await svc.GetVariantStatsAsync(
                 tenantCtx.TenantId, id, rangeFrom, rangeTo);
@@ -89,11 +99,19 @@ public static class VariantStatsEndpoints
             if (string.IsNullOrWhiteSpace(flowId))
                 return Results.BadRequest("'flowId' es obligatorio.");
 
+            // P1: validar formato flowId con regex (flow_00..flow_07)
+            if (!FlowIdRegex.IsMatch(flowId))
+                return Results.BadRequest("'flowId' debe tener formato 'flow_0N' (N=0-7).");
+
             var rangeFrom = from ?? DateTimeOffset.UtcNow.AddDays(-30);
             var rangeTo   = to   ?? DateTimeOffset.UtcNow;
 
             if (rangeFrom >= rangeTo)
                 return Results.BadRequest("'from' debe ser anterior a 'to'.");
+
+            // P1: limitar rango máximo
+            if ((rangeTo - rangeFrom).TotalDays > MaxRangeDays)
+                return Results.BadRequest($"El rango máximo permitido es {MaxRangeDays} días.");
 
             var variants = await svc.GetVariantComparisonAsync(
                 tenantCtx.TenantId, flowId, templateId, rangeFrom, rangeTo);
@@ -165,10 +183,16 @@ public static class VariantStatsEndpoints
         {
             if (string.IsNullOrWhiteSpace(req.FlowId))
                 return Results.BadRequest("'flowId' es obligatorio.");
+            // P1: validar formato flowId con regex
+            if (!FlowIdRegex.IsMatch(req.FlowId))
+                return Results.BadRequest("'flowId' debe tener formato 'flow_0N' (N=0-7).");
             if (string.IsNullOrWhiteSpace(req.TemplateId))
                 return Results.BadRequest("'templateId' es obligatorio.");
             if (string.IsNullOrWhiteSpace(req.VariantKey))
                 return Results.BadRequest("'variantKey' es obligatorio.");
+            // P1: limitar longitud de variantKey alineado con constraint SQL (32 chars)
+            if (req.VariantKey.Length > 32)
+                return Results.BadRequest("'variantKey' no puede superar 32 caracteres.");
             if (req.WeightPct < 0 || req.WeightPct > 100)
                 return Results.BadRequest("'weightPct' debe estar entre 0 y 100.");
 

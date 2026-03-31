@@ -65,6 +65,12 @@ public sealed class TwilioOutboundMessageSender : IOutboundMessageSender
     // Nombre del HttpClient registrado en DI para la Twilio API
     private const string TwilioHttpClient = "Twilio";
 
+    /// <summary>
+    /// Duración de la ventana de sesión de WhatsApp (24 horas según política de Meta/Twilio).
+    /// Constante para evitar magic numbers y facilitar cambios futuros.
+    /// </summary>
+    private const int WhatsAppSessionWindowHours = 24;
+
     public TwilioOutboundMessageSender(
         AppDbContext                          db,
         IOptions<TwilioOptions>              opts,
@@ -213,7 +219,7 @@ public sealed class TwilioOutboundMessageSender : IOutboundMessageSender
             Channel          = request.Channel,
             FlowId           = request.FlowId,
             Status           = "open",
-            SessionExpiresAt = DateTimeOffset.UtcNow.AddHours(24),
+            SessionExpiresAt = DateTimeOffset.UtcNow.AddHours(WhatsAppSessionWindowHours),
         };
         _db.Conversations.Add(newConv);
         await _db.SaveChangesAsync(ct);

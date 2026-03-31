@@ -29,7 +29,9 @@ public sealed class SessionInvalidationService : ISessionInvalidationService
         Guid tenantId, Guid userId, string jti,
         DateTimeOffset jwtExpiresAt, string? reason = null)
     {
-        bool exists = await _db.SessionRevocations.AnyAsync(r => r.Jti == jti);
+        // P0: filtrar también por tenantId+userId para evitar cross-tenant (defensa en profundidad).
+        bool exists = await _db.SessionRevocations.AnyAsync(
+            r => r.Jti == jti && r.TenantId == tenantId && r.UserId == userId);
         if (exists) return;
 
         _db.SessionRevocations.Add(new SessionRevocation
@@ -56,6 +58,7 @@ public sealed class SessionInvalidationService : ISessionInvalidationService
         if (_cache.TryGetValue(CacheKey(jti), out bool cached))
             return cached;
 
+        // JTI es globalmente único por diseño JWT; la búsqueda por JTI sola es correcta.
         bool revoked = await _db.SessionRevocations.AnyAsync(r => r.Jti == jti);
 
         _cache.Set(CacheKey(jti), revoked, new MemoryCacheEntryOptions
