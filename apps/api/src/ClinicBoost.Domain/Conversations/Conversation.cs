@@ -53,6 +53,12 @@ public sealed class Message
     public string? TemplateId { get; init; }
     public string? TemplateVars { get; init; }          // JSON
 
+    /// <summary>
+    /// FK a message_variants. Null si el mensaje no pertenece a ninguna variante A/B activa.
+    /// Se propaga a MessageDeliveryEvent para poder agregar entregabilidad por variante sin JOIN.
+    /// </summary>
+    public Guid? MessageVariantId { get; set; }
+
     public string? MediaUrl { get; init; }
     public string? MediaType { get; init; }
 

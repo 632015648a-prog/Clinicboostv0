@@ -1,4 +1,6 @@
+using ClinicBoost.Api.Features.Variants;
 using ClinicBoost.Api.Infrastructure.Database;
+using ClinicBoost.Domain.Variants;
 using ClinicBoost.Domain.Conversations;
 using Microsoft.EntityFrameworkCore;
 
@@ -59,14 +61,17 @@ public sealed class MessageStatusService : IMessageStatusService
         };
 
     private readonly AppDbContext                   _db;
-    private readonly ILogger<MessageStatusService>  _logger;
+    private readonly IVariantTrackingService         _variantTracking;
+    private readonly ILogger<MessageStatusService>   _logger;
 
     public MessageStatusService(
         AppDbContext                  db,
+        IVariantTrackingService       variantTracking,
         ILogger<MessageStatusService> logger)
     {
-        _db     = db;
-        _logger = logger;
+        _db              = db;
+        _variantTracking = variantTracking;
+        _logger          = logger;
     }
 
     /// <inheritdoc/>
@@ -121,12 +126,46 @@ public sealed class MessageStatusService : IMessageStatusService
         _db.MessageDeliveryEvents.Add(deliveryEvent);
         await _db.SaveChangesAsync(ct);
 
+        // ── 4. Registrar en funnel de variante si corresponde ─────────────────
+        if (message?.MessageVariantId.HasValue == true)
+        {
+            var variantEventType = request.MessageStatus switch
+            {
+                "delivered" => VariantEventType.Delivered,
+                "read"      => VariantEventType.Read,
+                _           => (string?)null,
+            };
+
+            if (variantEventType is not null)
+            {
+                var sentAt    = message.SentAt ?? message.CreatedAt;
+                var elapsedMs = (long)(now - sentAt).TotalMilliseconds;
+
+                await _variantTracking.RecordEventAsync(new VariantConversionEvent
+                {
+                    TenantId          = tenantId,
+                    MessageVariantId  = message.MessageVariantId!.Value,
+                    MessageId         = message.Id,
+                    ConversationId    = message.ConversationId,
+                    ProviderMessageId = request.MessageSid,
+                    EventType         = variantEventType,
+                    ElapsedMs         = elapsedMs,
+                    CorrelationId     = request.MessageSid,
+                    Metadata          = System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        twilio_status = request.MessageStatus,
+                        channel       = request.Channel,
+                    }),
+                }, ct);
+            }
+        }
+
         _logger.LogInformation(
             "[MsgStatus] Evento de entregabilidad registrado. " +
             "MessageSid={Sid} Status={Status} MessageId={MsgId} " +
-            "TenantId={TenantId} DeliveryEventId={EventId}",
+            "VariantId={VarId} TenantId={TenantId} DeliveryEventId={EventId}",
             request.MessageSid, request.MessageStatus,
-            message?.Id, tenantId, deliveryEvent.Id);
+            message?.Id, message?.MessageVariantId, tenantId, deliveryEvent.Id);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

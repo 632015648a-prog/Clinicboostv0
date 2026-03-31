@@ -1,4 +1,6 @@
 using ClinicBoost.Api.Features.Agent;
+using ClinicBoost.Api.Features.Variants;
+using ClinicBoost.Domain.Variants;
 using ClinicBoost.Api.Infrastructure.Database;
 using ClinicBoost.Api.Infrastructure.Tenants;
 using ClinicBoost.Domain.Automation;
@@ -168,6 +170,49 @@ public sealed class WhatsAppInboundWorker : BackgroundService
                 "MessageId={MsgId} MessageSid={Sid} " +
                 "ConvId={ConvId} PatientId={PatientId}",
                 message.Id, job.MessageSid, conversation.Id, patient.Id);
+
+            // ── Registrar evento reply en funnel de variante ──────────────────
+            // Buscar el último mensaje outbound con variant_id para esta conversación
+            // y registrar que el paciente respondió (reply = intención de conversión).
+            var lastOutboundWithVariant = await db.Messages
+                .Where(m =>
+                    m.TenantId       == job.TenantId      &&
+                    m.ConversationId == conversation.Id   &&
+                    m.Direction      == "outbound"        &&
+                    m.MessageVariantId != null)
+                .OrderByDescending(m => m.CreatedAt)
+                .FirstOrDefaultAsync(ct);
+
+            if (lastOutboundWithVariant?.MessageVariantId is not null)
+            {
+                var variantTracking = sp.GetRequiredService<IVariantTrackingService>();
+                var sentAt    = lastOutboundWithVariant.SentAt ?? lastOutboundWithVariant.CreatedAt;
+                var elapsedMs = (long)(DateTimeOffset.UtcNow - sentAt).TotalMilliseconds;
+
+                await variantTracking.RecordEventAsync(new VariantConversionEvent
+                {
+                    TenantId         = job.TenantId,
+                    MessageVariantId = lastOutboundWithVariant.MessageVariantId.Value,
+                    MessageId        = lastOutboundWithVariant.Id,
+                    ConversationId   = conversation.Id,
+                    ProviderMessageId = job.MessageSid,
+                    EventType        = VariantEventType.Reply,
+                    ElapsedMs        = elapsedMs,
+                    CorrelationId    = job.CorrelationId,
+                    Metadata         = System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        inbound_message_sid = job.MessageSid,
+                        channel             = "whatsapp",
+                        flow_id             = conversation.FlowId,
+                    }),
+                }, ct);
+
+                _logger.LogDebug(
+                    "[WAWorker] Evento reply registrado para variante. " +
+                    "VariantId={VarId} OutboundMsgId={OutId} ConvId={ConvId}",
+                    lastOutboundWithVariant.MessageVariantId.Value,
+                    lastOutboundWithVariant.Id, conversation.Id);
+            }
 
             // ── 6. Verificar consentimiento RGPD ──────────────────────────────
             if (!patient.RgpdConsent)

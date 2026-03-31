@@ -124,6 +124,13 @@ public sealed record OutboundMessageRequest
     /// <summary>ConversationId si ya existe; null para crear una nueva.</summary>
     public Guid? ConversationId      { get; init; }
 
+    /// <summary>
+    /// ID de la variante A/B seleccionada para este envío.
+    /// Null si no hay A/B testing activo para el par (FlowId, TemplateSid).
+    /// El sender propaga este ID al Message y al primer VariantConversionEvent.
+    /// </summary>
+    public Guid? MessageVariantId    { get; init; }
+
     /// <summary>ID de correlación para trazabilidad end-to-end.</summary>
     public required string CorrelationId { get; init; }
 }

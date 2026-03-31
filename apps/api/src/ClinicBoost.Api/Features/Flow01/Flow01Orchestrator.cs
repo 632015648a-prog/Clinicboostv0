@@ -1,4 +1,5 @@
 using System.Text.Json;
+using ClinicBoost.Api.Features.Variants;
 using ClinicBoost.Api.Infrastructure.Database;
 using ClinicBoost.Api.Infrastructure.Idempotency;
 using ClinicBoost.Domain.Appointments;
@@ -52,11 +53,12 @@ public sealed class Flow01Orchestrator
     // Configurable desde ICalOptions; aquí como constante por defecto.
     private const string DefaultTemplateSid = "HXmissed_call_recovery_v1";
 
-    private readonly AppDbContext           _db;
-    private readonly IOutboundMessageSender _sender;
-    private readonly IFlowMetricsService    _metrics;
-    private readonly IIdempotencyService    _idempotency;
-    private readonly Flow01Options          _opts;
+    private readonly AppDbContext                _db;
+    private readonly IOutboundMessageSender      _sender;
+    private readonly IFlowMetricsService         _metrics;
+    private readonly IIdempotencyService         _idempotency;
+    private readonly IVariantTrackingService     _variantTracking;
+    private readonly Flow01Options               _opts;
     private readonly ILogger<Flow01Orchestrator> _logger;
 
     public Flow01Orchestrator(
@@ -64,15 +66,17 @@ public sealed class Flow01Orchestrator
         IOutboundMessageSender      sender,
         IFlowMetricsService         metrics,
         IIdempotencyService         idempotency,
+        IVariantTrackingService     variantTracking,
         IOptions<Flow01Options>     opts,
         ILogger<Flow01Orchestrator> logger)
     {
-        _db          = db;
-        _sender      = sender;
-        _metrics     = metrics;
-        _idempotency = idempotency;
-        _opts        = opts.Value;
-        _logger      = logger;
+        _db              = db;
+        _sender          = sender;
+        _metrics         = metrics;
+        _idempotency     = idempotency;
+        _variantTracking = variantTracking;
+        _opts            = opts.Value;
+        _logger          = logger;
     }
 
     // ── ExecuteAsync ──────────────────────────────────────────────────────────
@@ -162,21 +166,42 @@ public sealed class Flow01Orchestrator
         var (templateSid, templateVars) = await BuildTemplateAsync(
             tenantId, callerPhone, patient.FullName, ct);
 
+        // ── 5b. Seleccionar variante A/B activa ───────────────────────────────
+        Guid? selectedVariantId = null;
+        if (!string.IsNullOrEmpty(templateSid))
+        {
+            var variant = await _variantTracking.SelectVariantAsync(
+                tenantId, "flow_01", templateSid, ct);
+
+            if (variant is not null)
+            {
+                selectedVariantId = variant.Id;
+                // Usar TemplateVars de la variante si las tiene definidas
+                if (!string.IsNullOrEmpty(variant.TemplateVars))
+                    templateVars = variant.TemplateVars;
+
+                _logger.LogDebug(
+                    "[Flow01] Variante A/B seleccionada: {Key} (VariantId={VarId}) TenantId={TenantId}",
+                    variant.VariantKey, variant.Id, tenantId);
+            }
+        }
+
         // ── 6. Enviar WhatsApp de recovery ────────────────────────────────────
         var sendRequest = new OutboundMessageRequest
         {
-            ToPhone       = $"whatsapp:{callerPhone}",
-            FromPhone     = $"whatsapp:{clinicPhone}",
-            Channel       = "whatsapp",
-            TemplateSid   = templateSid,
-            TemplateVars  = templateVars,
-            Body          = string.IsNullOrEmpty(templateSid)
-                                ? BuildFallbackBody(patient.FullName)
-                                : null,
-            FlowId        = "flow_01",
-            TenantId      = tenantId,
-            PatientId     = patient.Id,
-            CorrelationId = correlationId,
+            ToPhone          = $"whatsapp:{callerPhone}",
+            FromPhone        = $"whatsapp:{clinicPhone}",
+            Channel          = "whatsapp",
+            TemplateSid      = templateSid,
+            TemplateVars     = templateVars,
+            Body             = string.IsNullOrEmpty(templateSid)
+                                   ? BuildFallbackBody(patient.FullName)
+                                   : null,
+            FlowId           = "flow_01",
+            TenantId         = tenantId,
+            PatientId        = patient.Id,
+            CorrelationId    = correlationId,
+            MessageVariantId = selectedVariantId,
         };
 
         var now = DateTimeOffset.UtcNow;
@@ -258,6 +283,9 @@ public sealed class Flow01Orchestrator
         DateTimeOffset    outboundSentAt,
         decimal?          revenue,
         string            correlationId,
+        Guid?             messageVariantId = null,
+        Guid?             messageId        = null,
+        Guid?             conversationId   = null,
         CancellationToken ct = default)
     {
         var durationMs = (long)(DateTimeOffset.UtcNow - outboundSentAt).TotalMilliseconds;
@@ -274,9 +302,10 @@ public sealed class Flow01Orchestrator
             CorrelationId    = correlationId,
             Metadata         = JsonSerializer.Serialize(new
             {
-                appointment_id = appointmentId,
-                revenue_eur    = revenue,
-                duration_ms    = durationMs,
+                appointment_id     = appointmentId,
+                revenue_eur        = revenue,
+                duration_ms        = durationMs,
+                message_variant_id = messageVariantId,
             }),
         }, ct);
 
@@ -296,10 +325,11 @@ public sealed class Flow01Orchestrator
                 SuccessFeeAmount     = Math.Round(revenue.Value * 0.15m, 2),
                 AttributionData      = JsonSerializer.Serialize(new
                 {
-                    flow        = "flow_01",
-                    channel     = "whatsapp",
-                    source      = "missed_call",
-                    correlation = correlationId,
+                    flow               = "flow_01",
+                    channel            = "whatsapp",
+                    source             = "missed_call",
+                    correlation        = correlationId,
+                    message_variant_id = messageVariantId,
                 }),
             };
             _db.RevenueEvents.Add(revEvent);
@@ -307,8 +337,32 @@ public sealed class Flow01Orchestrator
 
             _logger.LogInformation(
                 "[Flow01] Revenue registrado. AppointmentId={AptId} Amount={Amt}EUR " +
-                "SuccessFee={Fee}EUR TenantId={TenantId}",
-                appointmentId, revenue.Value, revEvent.SuccessFeeAmount, tenantId);
+                "SuccessFee={Fee}EUR VariantId={VarId} TenantId={TenantId}",
+                appointmentId, revenue.Value, revEvent.SuccessFeeAmount,
+                messageVariantId, tenantId);
+        }
+
+        // ── Registrar evento booked en funnel de variante ─────────────────────
+        if (messageVariantId.HasValue)
+        {
+            await _variantTracking.RecordEventAsync(new Domain.Variants.VariantConversionEvent
+            {
+                TenantId         = tenantId,
+                MessageVariantId = messageVariantId.Value,
+                MessageId        = messageId,
+                ConversationId   = conversationId,
+                AppointmentId    = appointmentId,
+                EventType        = Domain.Variants.VariantEventType.Booked,
+                ElapsedMs        = durationMs,
+                RecoveredRevenue = revenue,
+                CorrelationId    = correlationId,
+                Metadata         = JsonSerializer.Serialize(new
+                {
+                    appointment_id = appointmentId,
+                    revenue_eur    = revenue,
+                    flow_id        = "flow_01",
+                }),
+            }, ct);
         }
     }
 

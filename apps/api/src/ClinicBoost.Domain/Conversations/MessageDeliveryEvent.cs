@@ -102,6 +102,13 @@ public sealed class MessageDeliveryEvent
     /// </summary>
     public string? MessageVariant { get; init; }
 
+    /// <summary>
+    /// FK a message_variants.id.
+    /// Copiado del Message padre para agregar entregabilidad por variante sin JOIN.
+    /// Null si el mensaje no pertenece a ninguna variante A/B activa.
+    /// </summary>
+    public Guid? MessageVariantId { get; init; }
+
     /// <summary>Canal de envío ("whatsapp" | "sms").</summary>
     public required string Channel { get; init; }
 

@@ -16,6 +16,7 @@ using ClinicBoost.Api.Features.Appointments;
 using ClinicBoost.Api.Features.Calendar;
 using ClinicBoost.Api.Features.Flow01;
 using ClinicBoost.Api.Features.Audit;
+using ClinicBoost.Api.Features.Variants;
 using FluentValidation;
 using System.Text;
 
@@ -378,6 +379,15 @@ public static class ServiceCollectionExtensions
         services.AddAppointmentsFeature();
         services.AddFlow01Feature(config);
         services.AddAuditSecurityFeature(config);
+        services.AddVariantTrackingFeature();
+        return services;
+    }
+
+    // ── Variant A/B tracking ──────────────────────────────────────────────────
+    public static IServiceCollection AddVariantTrackingFeature(
+        this IServiceCollection services)
+    {
+        services.AddScoped<IVariantTrackingService, VariantTrackingService>();
         return services;
     }
 
@@ -435,6 +445,7 @@ public static class EndpointRouteBuilderExtensions
         app.MapAppointmentEndpoints();
         app.MapFlow01Endpoints();
         app.MapAuthEndpoints();
+        app.MapVariantEndpoints();
         return app;
     }
 }

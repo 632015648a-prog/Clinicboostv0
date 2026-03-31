@@ -11,6 +11,7 @@ using ClinicBoost.Domain.Automation;
 using ClinicBoost.Domain.Revenue;
 using ClinicBoost.Domain.Webhooks;
 using ClinicBoost.Domain.Security;
+using ClinicBoost.Domain.Variants;
 
 namespace ClinicBoost.Api.Infrastructure.Database;
 
@@ -63,6 +64,10 @@ public sealed class AppDbContext : DbContext
 
     // ─── Métricas de flujos ───────────────────────────────────────────────
     public DbSet<FlowMetricsEvent>    FlowMetricsEvents   => Set<FlowMetricsEvent>();
+
+    // ─── Variantes A/B ────────────────────────────────────────────────────────
+    public DbSet<MessageVariant>         MessageVariants         => Set<MessageVariant>();
+    public DbSet<VariantConversionEvent> VariantConversionEvents => Set<VariantConversionEvent>();
 
     // ─── Caché de calendarios iCal ────────────────────────────────────────────
     public DbSet<CalendarCache>       CalendarCaches      => Set<CalendarCache>();
@@ -185,6 +190,8 @@ public sealed class AppDbContext : DbContext
             e.Property(x => x.DeliveredAt).HasColumnName("delivered_at");
             e.Property(x => x.ReadAt).HasColumnName("read_at");
             e.Property(x => x.CreatedAt).HasColumnName("created_at");
+            // Variante A/B propagada al Message para correlación sin JOIN
+            e.Property(x => x.MessageVariantId).HasColumnName("message_variant_id");
         });
 
         // RevenueEvent — inmutable
@@ -255,6 +262,7 @@ public sealed class AppDbContext : DbContext
             e.Property(x => x.TemplateId).HasColumnName("template_id").HasMaxLength(128);
             e.Property(x => x.MessageVariant).HasColumnName("message_variant")
              .HasMaxLength(16);
+            e.Property(x => x.MessageVariantId).HasColumnName("message_variant_id");
             e.Property(x => x.Channel).HasColumnName("channel").IsRequired()
              .HasMaxLength(32);
             e.Property(x => x.ErrorCode).HasColumnName("error_code").HasMaxLength(16);
@@ -373,6 +381,61 @@ public sealed class AppDbContext : DbContext
             e.Property(x => x.CorrelationId).HasColumnName("correlation_id");
             e.Property(x => x.ReceivedAt).HasColumnName("received_at");
             e.Property(x => x.ProcessedAt).HasColumnName("processed_at");
+        });
+
+        // ── MessageVariant — catálogo A/B ─────────────────────────────────────────
+        model.Entity<MessageVariant>(e =>
+        {
+            e.ToTable("message_variants");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
+            e.Property(x => x.FlowId).HasColumnName("flow_id").IsRequired().HasMaxLength(32);
+            e.Property(x => x.TemplateId).HasColumnName("template_id").IsRequired().HasMaxLength(128);
+            e.Property(x => x.VariantKey).HasColumnName("variant_key").IsRequired().HasMaxLength(32);
+            e.Property(x => x.BodyPreview).HasColumnName("body_preview");
+            e.Property(x => x.TemplateVars).HasColumnName("template_vars").HasColumnType("jsonb");
+            e.Property(x => x.IsActive).HasColumnName("is_active");
+            e.Property(x => x.WeightPct).HasColumnName("weight_pct");
+            e.Property(x => x.Metadata).HasColumnName("metadata").HasColumnType("jsonb");
+            e.Property(x => x.CreatedAt).HasColumnName("created_at");
+            e.Property(x => x.UpdatedAt).HasColumnName("updated_at");
+
+            e.HasIndex(x => new { x.TenantId, x.FlowId, x.TemplateId, x.VariantKey })
+             .IsUnique()
+             .HasDatabaseName("uq_message_variants_tenant_flow_template_key");
+
+            e.HasIndex(x => new { x.TenantId, x.FlowId })
+             .HasDatabaseName("ix_message_variants_tenant_flow");
+        });
+
+        // ── VariantConversionEvent — funnel INSERT-only ───────────────────────────
+        model.Entity<VariantConversionEvent>(e =>
+        {
+            e.ToTable("variant_conversion_events");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
+            e.Property(x => x.MessageVariantId).HasColumnName("message_variant_id").IsRequired();
+            e.Property(x => x.MessageId).HasColumnName("message_id");
+            e.Property(x => x.ConversationId).HasColumnName("conversation_id");
+            e.Property(x => x.AppointmentId).HasColumnName("appointment_id");
+            e.Property(x => x.ProviderMessageId).HasColumnName("provider_message_id").HasMaxLength(64);
+            e.Property(x => x.EventType).HasColumnName("event_type").IsRequired().HasMaxLength(32);
+            e.Property(x => x.ElapsedMs).HasColumnName("elapsed_ms");
+            e.Property(x => x.RecoveredRevenue).HasColumnName("recovered_revenue")
+             .HasColumnType("numeric(10,2)");
+            e.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3);
+            e.Property(x => x.CorrelationId).HasColumnName("correlation_id").IsRequired();
+            e.Property(x => x.Metadata).HasColumnName("metadata").HasColumnType("jsonb");
+            e.Property(x => x.OccurredAt).HasColumnName("occurred_at");
+
+            e.HasIndex(x => new { x.TenantId, x.MessageVariantId, x.EventType })
+             .HasDatabaseName("ix_vce_tenant_variant_type");
+            e.HasIndex(x => new { x.TenantId, x.MessageVariantId, x.OccurredAt })
+             .HasDatabaseName("ix_vce_tenant_variant_occurred");
+            e.HasIndex(x => x.CorrelationId)
+             .HasDatabaseName("ix_vce_correlation_id");
         });
 
         // ── Security: RefreshToken ────────────────────────────────────────────

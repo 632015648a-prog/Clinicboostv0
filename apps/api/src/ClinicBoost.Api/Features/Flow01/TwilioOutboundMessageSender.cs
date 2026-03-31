@@ -1,9 +1,11 @@
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using ClinicBoost.Api.Features.Variants;
 using ClinicBoost.Api.Infrastructure.Database;
 using ClinicBoost.Api.Infrastructure.Twilio;
 using ClinicBoost.Domain.Conversations;
+using ClinicBoost.Domain.Variants;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -57,6 +59,7 @@ public sealed class TwilioOutboundMessageSender : IOutboundMessageSender
     private readonly AppDbContext                          _db;
     private readonly TwilioOptions                        _opts;
     private readonly IHttpClientFactory                   _httpFactory;
+    private readonly IVariantTrackingService              _variantTracking;
     private readonly ILogger<TwilioOutboundMessageSender> _logger;
 
     // Nombre del HttpClient registrado en DI para la Twilio API
@@ -66,12 +69,14 @@ public sealed class TwilioOutboundMessageSender : IOutboundMessageSender
         AppDbContext                          db,
         IOptions<TwilioOptions>              opts,
         IHttpClientFactory                   httpFactory,
+        IVariantTrackingService              variantTracking,
         ILogger<TwilioOutboundMessageSender> logger)
     {
-        _db          = db;
-        _opts        = opts.Value;
-        _httpFactory = httpFactory;
-        _logger      = logger;
+        _db              = db;
+        _opts            = opts.Value;
+        _httpFactory     = httpFactory;
+        _variantTracking = variantTracking;
+        _logger          = logger;
     }
 
     // ── SendAsync ─────────────────────────────────────────────────────────────
@@ -101,13 +106,15 @@ public sealed class TwilioOutboundMessageSender : IOutboundMessageSender
             TemplateVars       = request.TemplateVars,
             Status             = "pending",
             GeneratedByAi      = false,
+            // Propagar variante A/B seleccionada por el orchestrator
+            MessageVariantId   = request.MessageVariantId,
         };
         _db.Messages.Add(message);
         await _db.SaveChangesAsync(ct);
 
         _logger.LogDebug(
-            "[OutboundSender] Message creado en BD. MessageId={MsgId} Status=pending",
-            message.Id);
+            "[OutboundSender] Message creado en BD. MessageId={MsgId} VariantId={VarId} Status=pending",
+            message.Id, request.MessageVariantId);
 
         // ── 3. Llamar a Twilio ────────────────────────────────────────────────
         try
@@ -123,6 +130,28 @@ public sealed class TwilioOutboundMessageSender : IOutboundMessageSender
             _logger.LogInformation(
                 "[OutboundSender] Mensaje enviado OK. MessageId={MsgId} TwilioSid={Sid}",
                 message.Id, twilioSid);
+
+            // ── Registrar evento outbound_sent en funnel de variante ──────────
+            if (request.MessageVariantId.HasValue)
+            {
+                await _variantTracking.RecordEventAsync(new VariantConversionEvent
+                {
+                    TenantId          = request.TenantId,
+                    MessageVariantId  = request.MessageVariantId.Value,
+                    MessageId         = message.Id,
+                    ConversationId    = conversationId,
+                    ProviderMessageId = twilioSid,
+                    EventType         = VariantEventType.OutboundSent,
+                    ElapsedMs         = null,   // evento base del funnel
+                    CorrelationId     = request.CorrelationId,
+                    Metadata          = JsonSerializer.Serialize(new
+                    {
+                        channel      = request.Channel,
+                        flow_id      = request.FlowId,
+                        template_sid = request.TemplateSid,
+                    }),
+                }, ct);
+            }
 
             return OutboundSendResult.Success(message.Id, twilioSid);
         }
