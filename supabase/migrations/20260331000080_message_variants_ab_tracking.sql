@@ -288,9 +288,13 @@ CREATE INDEX IF NOT EXISTS ix_mde_variant_id
 ALTER TABLE message_variants ENABLE ROW LEVEL SECURITY;
 
 -- app_user solo ve y modifica su propio tenant
+-- Usa current_tenant_id() para soportar AMBAS rutas de autenticación:
+--   · JWT (Supabase Auth / frontend)  → auth.jwt() ->> 'tenant_id'
+--   · GUC app.tenant_id (API .NET)    → current_setting('app.tenant_id')
 CREATE POLICY rls_message_variants_tenant
-    ON message_variants
-    USING (tenant_id = current_setting('app.tenant_id', true)::uuid);
+    ON message_variants FOR ALL
+    USING      (tenant_id = current_tenant_id())
+    WITH CHECK (tenant_id = current_tenant_id());
 
 -- service_role puede ver todo (para jobs de background)
 CREATE POLICY rls_message_variants_service
@@ -305,8 +309,9 @@ CREATE POLICY rls_message_variants_service
 ALTER TABLE variant_conversion_events ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY rls_variant_conversion_events_tenant
-    ON variant_conversion_events
-    USING (tenant_id = current_setting('app.tenant_id', true)::uuid);
+    ON variant_conversion_events FOR ALL
+    USING      (tenant_id = current_tenant_id())
+    WITH CHECK (tenant_id = current_tenant_id());
 
 CREATE POLICY rls_variant_conversion_events_service
     ON variant_conversion_events
@@ -434,8 +439,9 @@ AS $$
 DECLARE
     v_current_tenant uuid;
 BEGIN
-    -- Validar que el llamante tiene acceso a este tenant
-    v_current_tenant := current_setting('app.tenant_id', true)::uuid;
+    -- Validar que el llamante tiene acceso a este tenant.
+    -- current_tenant_id() soporta AMBAS rutas: JWT (frontend) y GUC (API .NET)
+    v_current_tenant := current_tenant_id();
     IF v_current_tenant IS NULL OR v_current_tenant <> p_tenant_id THEN
         RAISE EXCEPTION 'Acceso denegado: tenant_id no coincide con el contexto de sesión.'
             USING ERRCODE = 'insufficient_privilege';

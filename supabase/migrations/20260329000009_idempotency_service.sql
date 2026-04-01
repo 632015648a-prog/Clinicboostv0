@@ -38,10 +38,23 @@ ALTER TABLE public.processed_events
             CHECK (payload_hash IS NULL OR char_length(payload_hash) = 64);
 
 -- ── 2. Índice UNIQUE principal con semántica NULL correcta ────────────────────
--- Eliminamos el índice anterior (si existe) y creamos el nuevo.
+-- Eliminamos la constraint/índice anterior (si existe) y creamos el nuevo.
+--
+-- IMPORTANTE: En PostgreSQL el índice que respalda un UNIQUE constraint
+-- no se puede borrar con DROP INDEX; hay que usar ALTER TABLE DROP CONSTRAINT.
+-- Usamos DO $$ para manejar el caso en que no exista ninguno de los dos.
 
--- Intentar eliminar el índice antiguo si existe con nombre diferente
-DROP INDEX IF EXISTS public.processed_events_event_type_event_id_key;
+DO $$
+BEGIN
+  -- Eliminar la constraint UNIQUE original definida en 0001
+  -- (se llama processed_events_event_type_event_id_key por convención PG)
+  ALTER TABLE public.processed_events
+    DROP CONSTRAINT IF EXISTS processed_events_event_type_event_id_key;
+EXCEPTION WHEN OTHERS THEN
+  NULL; -- ignorar si no existe o ya fue eliminada
+END $$;
+
+-- Eliminar índice standalone con nombre alternativo (por si fue creado así)
 DROP INDEX IF EXISTS public.idx_processed_events_unique;
 
 -- Índice principal de unicidad:
