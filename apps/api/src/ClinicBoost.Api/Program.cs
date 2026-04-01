@@ -98,11 +98,12 @@ try
     if (app.Environment.IsEnvironment("Staging"))
     {
         app.MapOpenApi();
-        app.MapScalarApiReference(opts =>
+        // EndpointPathPrefix fue eliminado en Scalar.AspNetCore v2.x.
+        // El prefijo de ruta se pasa como parámetro endpointPrefix directamente.
+        app.MapScalarApiReference(endpointPrefix: "/scalar", options: opts =>
         {
-            opts.Title       = "ClinicBoost API [STAGING]";
-            opts.Theme       = Scalar.AspNetCore.ScalarTheme.Purple;
-            opts.EndpointPathPrefix = "/scalar";
+            opts.Title = "ClinicBoost API [STAGING]";
+            opts.Theme = Scalar.AspNetCore.ScalarTheme.Purple;
         });
     }
 

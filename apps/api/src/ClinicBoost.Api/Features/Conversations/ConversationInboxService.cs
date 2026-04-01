@@ -129,7 +129,7 @@ public sealed class ConversationInboxService : IConversationInboxService
         var patients = await _db.Patients
             .AsNoTracking()
             .Where(p => p.TenantId == tenantId && patientIds.Contains(p.Id))
-            .Select(p => new { p.Id, p.Name, p.Phone })
+            .Select(p => new { p.Id, p.FullName, p.Phone })
             .ToDictionaryAsync(p => p.Id, ct);
 
         // Cargar último mensaje de cada conversación (para preview y delivery status)
@@ -165,7 +165,7 @@ public sealed class ConversationInboxService : IConversationInboxService
             items.Add(new InboxConversationItem
             {
                 ConversationId     = c.Id,
-                PatientName        = patient?.Name    ?? "(desconocido)",
+                PatientName        = patient?.FullName ?? "(desconocido)",
                 PatientPhone       = patient?.Phone   ?? "",
                 FlowId             = c.FlowId         ?? "",
                 Status             = c.Status,
@@ -226,7 +226,7 @@ public sealed class ConversationInboxService : IConversationInboxService
         var patient = await _db.Patients
             .AsNoTracking()
             .Where(p => p.TenantId == tenantId && p.Id == conv.PatientId)
-            .Select(p => new { p.Name, p.Phone })
+            .Select(p => new { p.FullName, p.Phone })
             .FirstOrDefaultAsync(ct);
 
         // Cargar mensajes (últimos 100, cronológico)
@@ -259,7 +259,7 @@ public sealed class ConversationInboxService : IConversationInboxService
         return new ConversationDetailResponse
         {
             ConversationId = conv.Id,
-            PatientName    = patient?.Name  ?? "(desconocido)",
+            PatientName    = patient?.FullName ?? "(desconocido)",
             PatientPhone   = patient?.Phone ?? "",
             FlowId         = conv.FlowId    ?? "",
             Status         = conv.Status,
