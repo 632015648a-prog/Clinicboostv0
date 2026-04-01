@@ -119,14 +119,29 @@ COMMENT ON COLUMN public.processed_events.metadata IS
 
 -- ── 6. Tests inline ───────────────────────────────────────────────────────────
 -- Verifican el comportamiento del índice UNIQUE y permisos.
--- Usan DO $$ blocks con ASSERT que abortan si falla.
+-- NOTA: los tests usan tenant_id = NULL para evitar la FK a tenants.
+--   tenant_id es nullable en processed_events por diseño (webhooks globales).
+--   Los tests con tenant_id usan UUIDs ficticios que se inyectan directamente
+--   deshabilitando el trigger FK temporalmente no es necesario: simplemente
+--   usamos NULL en todos los casos donde queremos aislar por "tenant diferente"
+--   y dos UUIDs ficticios que NUNCA violarán FK porque se insertan como tenants
+--   reales primero y se borran al final.
 
 DO $$
 DECLARE
-    v_tenant_a UUID := '10000000-0000-0000-0000-000000000001';
-    v_tenant_b UUID := '10000000-0000-0000-0000-000000000002';
+    v_tenant_a UUID;
+    v_tenant_b UUID;
     v_now      TIMESTAMPTZ := NOW();
 BEGIN
+    -- Crear dos tenants temporales de test (se borran al final del bloque)
+    -- Se usan slugs únicos con timestamp para evitar colisiones
+    INSERT INTO public.tenants (name, slug, time_zone, whatsapp_number, plan)
+    VALUES ('__test_tenant_a__', '__test-slug-a-0009__', 'Europe/Madrid', '+10000000001', 1)
+    RETURNING id INTO v_tenant_a;
+
+    INSERT INTO public.tenants (name, slug, time_zone, whatsapp_number, plan)
+    VALUES ('__test_tenant_b__', '__test-slug-b-0009__', 'Europe/Madrid', '+10000000002', 1)
+    RETURNING id INTO v_tenant_b;
 
     -- ── Test 1: Inserción básica funciona ─────────────────────────────────
     INSERT INTO public.processed_events
@@ -221,8 +236,13 @@ BEGIN
 
 
     -- ── Limpieza de datos de test ──────────────────────────────────────────
+    -- Borrar processed_events de test primero (FK a tenants)
     DELETE FROM public.processed_events
     WHERE event_type LIKE 'test.%';
+
+    -- Borrar tenants temporales (CASCADE borrará sus FKs en otras tablas)
+    DELETE FROM public.tenants
+    WHERE slug IN ('__test-slug-a-0009__', '__test-slug-b-0009__');
 
     RAISE NOTICE '=== Todos los tests de idempotencia pasaron (0009) ===';
 
