@@ -35,8 +35,8 @@ public static class AppointmentEndpoints
     {
         var group = app.MapGroup("/api/appointments")
             .RequireAuthorization()
-            .WithTags("Appointments")
-            .WithOpenApi();
+            .WithTags("Appointments");
+            // .WithOpenApi() eliminado: obsoleto en .NET 10 (aspnet/deprecate/002)
 
         // GET /api/appointments/slots
         group.MapGet("/slots", GetAvailableSlotsAsync)

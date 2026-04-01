@@ -32,7 +32,7 @@ try
     {
         opts.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
         // Limpiar redes/proxies por defecto (solo loopback) para evitar spoofing.
-        opts.KnownNetworks.Clear();
+        opts.KnownIPNetworks.Clear(); // KnownNetworks obsoleto en .NET 10; usar KnownIPNetworks
         opts.KnownProxies.Clear();
         // Añadir loopback explícito
         opts.KnownProxies.Add(System.Net.IPAddress.Loopback);

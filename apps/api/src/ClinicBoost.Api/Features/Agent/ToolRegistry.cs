@@ -224,7 +224,9 @@ public sealed class ToolRegistry
             var limit = args.TryGetProperty("limit", out var lp) ? lp.GetInt32() : 5;
 
             var now   = DateTimeOffset.UtcNow;
-            var appointments = await _db.Appointments
+            // Materializar primero como entidades, luego proyectar en memoria
+            // (.Select() anónimo + ToListAsync() tiene inferencia ambigua en .NET 10)
+            var rawAppts = await _db.Appointments
                 .Where(a =>
                     a.TenantId   == ctx.TenantId  &&
                     a.PatientId  == ctx.PatientId  &&
@@ -233,15 +235,16 @@ public sealed class ToolRegistry
                     a.Status != AppointmentStatus.Completed)
                 .OrderBy(a => a.StartsAtUtc)
                 .Take(limit)
-                .Select(a => new
+                .ToListAsync(ct);
+
+            var appointments = rawAppts.Select(a => new
                 {
                     id            = a.Id,
                     therapist     = a.TherapistName,
                     starts_at_utc = a.StartsAtUtc,
                     ends_at_utc   = a.EndsAtUtc,
                     status        = a.Status.ToString().ToLowerInvariant(),
-                })
-                .ToListAsync(ct);
+                }).ToList();
 
             return ToolExecutionResult.Ok(
                 appointments.Count > 0

@@ -1,5 +1,6 @@
 using ClinicBoost.Api.Infrastructure.Tenants;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using System.Text.RegularExpressions;
 
 namespace ClinicBoost.Api.Features.Variants;
@@ -30,7 +31,7 @@ namespace ClinicBoost.Api.Features.Variants;
 // SEGURIDAD
 // ─────────
 //  · Todos los endpoints requieren autenticación (JWT).
-//  · El TenantId se obtiene del TenantContext (JWT claims), nunca del body.
+//  · El TenantId se obtiene del TenantContext (JWT claims) vía RequireTenantId().
 //  · RLS activa en Postgres garantiza aislamiento multi-tenant.
 //
 // DISEÑO
@@ -64,6 +65,7 @@ public static class VariantStatsEndpoints
             IVariantTrackingService  svc,
             ITenantContext           tenantCtx) =>
         {
+            var tenantId  = tenantCtx.RequireTenantId();
             var rangeFrom = from ?? DateTimeOffset.UtcNow.AddDays(-30);
             var rangeTo   = to   ?? DateTimeOffset.UtcNow;
 
@@ -75,7 +77,7 @@ public static class VariantStatsEndpoints
                 return Results.BadRequest($"El rango máximo permitido es {MaxRangeDays} días.");
 
             var stats = await svc.GetVariantStatsAsync(
-                tenantCtx.TenantId, id, rangeFrom, rangeTo);
+                tenantId, id, rangeFrom, rangeTo);
 
             if (stats.SentCount == 0 && stats.VariantId == Guid.Empty)
                 return Results.NotFound($"Variante {id} no encontrada para este tenant.");
@@ -96,6 +98,8 @@ public static class VariantStatsEndpoints
             IVariantTrackingService      svc,
             ITenantContext               tenantCtx) =>
         {
+            var tenantId = tenantCtx.RequireTenantId();
+
             if (string.IsNullOrWhiteSpace(flowId))
                 return Results.BadRequest("'flowId' es obligatorio.");
 
@@ -114,7 +118,7 @@ public static class VariantStatsEndpoints
                 return Results.BadRequest($"El rango máximo permitido es {MaxRangeDays} días.");
 
             var variants = await svc.GetVariantComparisonAsync(
-                tenantCtx.TenantId, flowId, templateId, rangeFrom, rangeTo);
+                tenantId, flowId, templateId, rangeFrom, rangeTo);
 
             // Determinar variante ganadora (mayor booking_rate con al menos 10 enviados)
             var winner = variants
@@ -143,13 +147,15 @@ public static class VariantStatsEndpoints
             ClinicBoost.Api.Infrastructure.Database.AppDbContext db,
             ITenantContext               tenantCtx) =>
         {
+            var tenantId = tenantCtx.RequireTenantId();
+
             // N-P2-02: validar formato de flowId opcional para consistencia y para
             // prevenir que valores malformados lleguen a la query de la BD.
             if (!string.IsNullOrEmpty(flowId) && !FlowIdRegex.IsMatch(flowId))
                 return Results.BadRequest("'flowId' debe tener formato 'flow_0N' (N=0-7).");
 
             var query = db.MessageVariants
-                .Where(v => v.TenantId == tenantCtx.TenantId);
+                .Where(v => v.TenantId == tenantId);
 
             if (!string.IsNullOrEmpty(flowId))
                 query = query.Where(v => v.FlowId == flowId);
@@ -157,23 +163,26 @@ public static class VariantStatsEndpoints
             if (!string.IsNullOrEmpty(templateId))
                 query = query.Where(v => v.TemplateId == templateId);
 
-            var variants = await query
+            // Materializar como entidades, luego proyectar en memoria
+            // (evita ambigüedad de inferencia de tipos anónimos con ToListAsync en .NET 10)
+            var rawVariants = await query
                 .OrderBy(v => v.FlowId)
                 .ThenBy(v => v.TemplateId)
                 .ThenBy(v => v.VariantKey)
-                .Select(v => new
-                {
-                    v.Id,
-                    v.FlowId,
-                    v.TemplateId,
-                    v.VariantKey,
-                    v.BodyPreview,
-                    v.WeightPct,
-                    v.IsActive,
-                    v.CreatedAt,
-                    v.UpdatedAt,
-                })
                 .ToListAsync();
+
+            var variants = rawVariants.Select(v => new
+            {
+                v.Id,
+                v.FlowId,
+                v.TemplateId,
+                v.VariantKey,
+                v.BodyPreview,
+                v.WeightPct,
+                v.IsActive,
+                v.CreatedAt,
+                v.UpdatedAt,
+            }).ToList();
 
             return Results.Ok(variants);
         })
@@ -186,6 +195,8 @@ public static class VariantStatsEndpoints
             ClinicBoost.Api.Infrastructure.Database.AppDbContext db,
             ITenantContext                            tenantCtx) =>
         {
+            var tenantId = tenantCtx.RequireTenantId();
+
             if (string.IsNullOrWhiteSpace(req.FlowId))
                 return Results.BadRequest("'flowId' es obligatorio.");
             // P1: validar formato flowId con regex
@@ -203,9 +214,9 @@ public static class VariantStatsEndpoints
 
             // Verificar unicidad dentro del tenant
             var exists = await db.MessageVariants.AnyAsync(v =>
-                v.TenantId   == tenantCtx.TenantId &&
-                v.FlowId     == req.FlowId         &&
-                v.TemplateId == req.TemplateId     &&
+                v.TenantId   == tenantId       &&
+                v.FlowId     == req.FlowId     &&
+                v.TemplateId == req.TemplateId &&
                 v.VariantKey == req.VariantKey);
 
             if (exists)
@@ -214,7 +225,7 @@ public static class VariantStatsEndpoints
 
             var variant = new ClinicBoost.Domain.Variants.MessageVariant
             {
-                TenantId     = tenantCtx.TenantId,
+                TenantId     = tenantId,
                 FlowId       = req.FlowId,
                 TemplateId   = req.TemplateId,
                 VariantKey   = req.VariantKey,
@@ -242,10 +253,12 @@ public static class VariantStatsEndpoints
             ClinicBoost.Api.Infrastructure.Database.AppDbContext db,
             ITenantContext               tenantCtx) =>
         {
+            var tenantId = tenantCtx.RequireTenantId();
+
             var variant = await db.MessageVariants
                 .FirstOrDefaultAsync(v =>
-                    v.Id       == id              &&
-                    v.TenantId == tenantCtx.TenantId);
+                    v.Id       == id       &&
+                    v.TenantId == tenantId);
 
             if (variant is null)
                 return Results.NotFound($"Variante {id} no encontrada.");
@@ -285,27 +298,4 @@ public static class VariantStatsEndpoints
 
         return routes;
     }
-}
-
-// ── Alias interno para evitar FQDN repetitivo ─────────────────────────────────
-file static class DbExtensions
-{
-    public static System.Threading.Tasks.Task<bool> AnyAsync<T>(
-        this Microsoft.EntityFrameworkCore.DbSet<T> set,
-        System.Linq.Expressions.Expression<Func<T, bool>> predicate)
-        where T : class
-        => Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions
-            .AnyAsync(set, predicate);
-
-    public static System.Threading.Tasks.Task<T?> FirstOrDefaultAsync<T>(
-        this Microsoft.EntityFrameworkCore.DbSet<T> set,
-        System.Linq.Expressions.Expression<Func<T, bool>> predicate)
-        where T : class
-        => Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions
-            .FirstOrDefaultAsync(set, predicate);
-
-    public static System.Threading.Tasks.Task<System.Collections.Generic.List<TResult>> ToListAsync<T, TResult>(
-        this System.Linq.IQueryable<TResult> query)
-        => Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions
-            .ToListAsync(query);
 }
