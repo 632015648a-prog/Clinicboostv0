@@ -107,19 +107,14 @@ public sealed class TC04_OutOfHoursTimezoneTests : SmokeTestDb
         localTime.Hour.Should().Be(9, "Mexico City en enero (UTC-6): 15:00 UTC = 09:00 local");
     }
 
-    // ── TC-04-C: Flow01Options.MaxDelayMinutes está definido pero no implementado ─
+    // ── TC-04-C: MaxDelayMinutes implementado como guard en Flow01Orchestrator ─
     //
-    // GAP-03: Flow01Options.MaxDelayMinutes está definido en Flow01Options (valor=60)
-    // pero NO se usa en Flow01Orchestrator.ExecuteAsync para cortar llamadas antiguas.
-    // El único mecanismo de skip actual es el cooldown_minutes (basado en mensajes
-    // recientes para el mismo paciente), que es distinto de "la llamada es muy antigua".
-    //
-    // Este test DOCUMENTA el comportamiento ACTUAL (el orquestador procesa aunque la
-    // llamada tenga 10 minutos de antigüedad) y el comportamiento ESPERADO (skip).
-    // Cuando se implemente la feature MaxDelayMinutes, hay que invertir las assertions.
+    // GAP-03 RESUELTO: Flow01Orchestrator comprueba que (UtcNow - callReceivedAt)
+    // no supere MaxDelayMinutes antes de enviar el mensaje de recovery.
+    // Si se supera, retorna Skipped y registra "flow_skipped" / "max_delay_exceeded".
 
-    [Fact(DisplayName = "TC-04-C: MaxDelayMinutes definido en Flow01Options (GAP-03 — pendiente de implementación)")]
-    public async Task TC04C_MaxDelay_DocumentedGap()
+    [Fact(DisplayName = "TC-04-C: MaxDelayMinutes=5, llamada de hace 10 min → Skipped (GAP-03 RESUELTO)")]
+    public async Task TC04C_MaxDelay_ImplementedGuard()
     {
         // ARRANGE: configurar MaxDelayMinutes = 5 (ventana muy corta para test)
         await SmokeFixtures.SeedTenantAsync(Db, TenantId, timeZone: "Europe/Madrid");
@@ -157,7 +152,7 @@ public sealed class TC04_OutOfHoursTimezoneTests : SmokeTestDb
             Options.Create(new Flow01Options
             {
                 DefaultTemplateSid = "HXsmoke_tc04",
-                MaxDelayMinutes    = 5,   // Definido pero no implementado aún (GAP-03)
+                MaxDelayMinutes    = 5,   // GAP-03 RESUELTO: esta opción ahora se aplica
             }),
             NullLogger<Flow01Orchestrator>.Instance);
 
@@ -179,31 +174,29 @@ public sealed class TC04_OutOfHoursTimezoneTests : SmokeTestDb
             callReceivedAt: callReceivedAt,   // Hace 10 minutos
             correlationId:  "corr-tc04-C");
 
-        // ── ASSERT: comportamiento ACTUAL (MaxDelayMinutes NO está implementado) ──
-        //
-        // GAP-03: el orquestador NO tiene guard de MaxDelayMinutes todavía.
-        // La llamada de hace 10 minutos se PROCESA (IsSuccess=true) en lugar de
-        // saltarse. La implementación pendiente debería:
-        //   if (UtcNow - callReceivedAt > MaxDelayMinutes) return Skipped(...);
-        //
-        // Cuando se implemente GAP-03, cambiar las assertions a:
-        //   result.FlowStep.Should().Be("skipped", ...)
-        //   (await Db.Messages.CountAsync()).Should().Be(0, ...)
+        // ── ASSERT: GAP-03 RESUELTO — la llamada antigua se descarta ─────────
+        // Skipped es IsSuccess=true con FlowStep="skipped" y ErrorMessage con la razón.
         result.IsSuccess.Should().BeTrue(
-            "el orquestador procesa la llamada aunque tenga 10 min de antigüedad" +
-            " — GAP-03: MaxDelayMinutes aún no implementado como guard");
+            "Skipped es un resultado legítimo (no un error), IsSuccess=true");
+        result.FlowStep.Should().Be("skipped",
+            "la llamada debe ser descartada cuando supera la ventana máxima");
+        result.ErrorMessage.Should().Contain("máxima superada",
+            "el ErrorMessage debe describir la causa del skip");
 
-        // La métrica missed_call_received SIEMPRE se registra (antes del guard de MaxDelay)
-        (await Db.FlowMetricsEvents
-            .AnyAsync(e => e.MetricType == "missed_call_received"))
-            .Should().BeTrue("la llamada perdida se registra en métricas");
+        // La métrica flow_skipped/max_delay_exceeded debe registrarse
+        var skipMetric = await Db.FlowMetricsEvents
+            .Where(e => e.TenantId   == TenantId   &&
+                        e.FlowId     == "flow_01"   &&
+                        e.MetricType == "flow_skipped")
+            .FirstOrDefaultAsync();
+        skipMetric.Should().NotBeNull(
+            "debe registrarse la métrica flow_skipped con razón max_delay_exceeded");
+        skipMetric!.Metadata.Should().Contain("max_delay_exceeded",
+            "el metadata debe identificar la razón del skip");
 
-        // DOCUMENTAR EL GAP: MaxDelayMinutes está en Flow01Options.cs (línea ~551)
-        // pero no hay código en ExecuteAsync que lo lea y aplique.
-        // Issue de seguimiento: GAP-03 en SMOKE_TESTS.md
-        var opts = new Flow01Options { MaxDelayMinutes = 5, DefaultTemplateSid = "X" };
-        opts.MaxDelayMinutes.Should().Be(5,
-            "MaxDelayMinutes está correctamente definido en Flow01Options");
+        // Ningún mensaje debe haberse enviado (el guard opera ANTES del envío)
+        (await Db.Messages.AnyAsync(m => m.TenantId == TenantId))
+            .Should().BeFalse("no se debe enviar mensaje cuando el guard falla");
     }
 
     // ── TC-04-D: DST awareness — cambio de hora no rompe la conversión ────────
@@ -250,25 +243,22 @@ public sealed class TC04_OutOfHoursTimezoneTests : SmokeTestDb
             "un timezone inválido debe lanzar excepción — nunca silenciarse");
     }
 
-    // ── TC-04-F: El SystemPromptBuilder incluye hora local del tenant ─────────
+    // ── TC-04-F: SystemPromptBuilder incluye hora local del tenant ───────────
+    //
+    // GAP-02 RESUELTO: AgentContext.LocalNow (DateTimeOffset?) se calcula en
+    // WhatsAppInboundWorker con TZConvert y el SystemPromptBuilder lo incluye
+    // en el prompt cuando está disponible.
 
-    [Fact(DisplayName = "TC-04-F: SystemPromptBuilder — incluye contexto horario en el prompt")]
+    [Fact(DisplayName = "TC-04-F: SystemPromptBuilder — incluye hora local del tenant cuando LocalNow está disponible (GAP-02 RESUELTO)")]
     public async Task TC04F_SystemPrompt_IncludesLocalTimeContext()
     {
-        // NOTE: Este test verifica que el prompt del agente incluye la hora actual.
-        // La implementación real usa ClinicName y langCode; la hora local
-        // se pasa como parte de AiContextJson o como parte del contexto de AgentContext.
-        //
-        // PIEZA FALTANTE DOCUMENTADA:
-        // La hora local del tenant NO se pasa explícitamente en AgentContext.
-        // El SystemPromptBuilder tiene acceso a DateTimeOffset.UtcNow pero
-        // no al TenantTimeZone para convertirlo.
-        // → MEJORA RECOMENDADA: añadir LocalNow (DateTimeOffset) a AgentContext
-        //   calculado en WhatsAppInboundWorker usando Tenant.TimeZone.
+        var promptBuilder = new ClinicBoost.Api.Features.Agent.SystemPromptBuilder();
 
-        var prompt = new ClinicBoost.Api.Features.Agent.SystemPromptBuilder();
+        // ── CASO 1: LocalNow proporcionado → debe aparecer en el prompt ──────
+        var localNow = new DateTimeOffset(2026, 1, 15, 10, 30, 0,
+            TimeSpan.FromHours(1)); // 10:30 Madrid en enero
 
-        var ctx = new ClinicBoost.Api.Features.Agent.AgentContext
+        var ctxWithTime = new ClinicBoost.Api.Features.Agent.AgentContext
         {
             TenantId           = TenantId,
             PatientId          = Guid.NewGuid(),
@@ -286,19 +276,27 @@ public sealed class TC04_OutOfHoursTimezoneTests : SmokeTestDb
             DiscountMaxPct     = 0m,
             ClinicName         = "Fisioterapia Ramírez",
             LanguageCode       = "es",
+            LocalNow           = localNow,   // GAP-02 RESUELTO
         };
 
-        var builtPrompt = prompt.Build(ctx,
+        var promptWithTime = promptBuilder.Build(ctxWithTime,
             ClinicBoost.Api.Features.Agent.Intent.GeneralInquiry);
 
-        builtPrompt.Should().NotBeNullOrWhiteSpace(
-            "el SystemPromptBuilder debe generar un prompt");
-        builtPrompt.Should().Contain("Fisioterapia Ramírez",
+        promptWithTime.Should().NotBeNullOrWhiteSpace();
+        promptWithTime.Should().Contain("Fisioterapia Ramírez",
             "el prompt debe mencionar el nombre de la clínica");
+        promptWithTime.Should().Contain("10:30",
+            "GAP-02 RESUELTO: el prompt debe incluir la hora local del tenant");
 
-        // NOTA: Esta assertion documenta la PIEZA FALTANTE:
-        // El prompt debería contener la hora local pero actualmente
-        // no tiene acceso directo al timezone del tenant.
-        // → Registrado en GAP-02 del documento de piezas faltantes.
+        // ── CASO 2: LocalNow null (tenant sin timezone) → prompt sin hora ────
+        var ctxWithoutTime = ctxWithTime with { LocalNow = null };
+        var promptWithoutTime = promptBuilder.Build(ctxWithoutTime,
+            ClinicBoost.Api.Features.Agent.Intent.GeneralInquiry);
+
+        promptWithoutTime.Should().NotBeNullOrWhiteSpace();
+        promptWithoutTime.Should().Contain("Fisioterapia Ramírez");
+        // Cuando LocalNow es null, el prompt no incluye la línea de hora local
+        promptWithoutTime.Should().NotContain("hora local",
+            "sin LocalNow no debe aparecer la sección de hora local");
     }
 }

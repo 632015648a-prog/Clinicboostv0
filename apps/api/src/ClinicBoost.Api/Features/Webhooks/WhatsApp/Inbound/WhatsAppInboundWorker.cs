@@ -7,6 +7,7 @@ using ClinicBoost.Domain.Automation;
 using ClinicBoost.Domain.Conversations;
 using ClinicBoost.Domain.Patients;
 using Microsoft.EntityFrameworkCore;
+using TimeZoneConverter;
 
 namespace ClinicBoost.Api.Features.Webhooks.WhatsApp.Inbound;
 
@@ -25,11 +26,10 @@ namespace ClinicBoost.Api.Features.Webhooks.WhatsApp.Inbound;
 // 5. Upsert de la conversación activa (canal "whatsapp", flujo "flow_00").
 // 6. Persistir el mensaje inbound con su MessageSid para la correlación
 //    MessageSid ↔ Message.Id ↔ Conversation.Id ↔ TenantId.
-// 7. Verificar consentimiento RGPD del paciente.
-//    · Si RgpdConsent == false → AutomationRun = "skipped", no hay acción IA.
-// 8. Marcar AutomationRun como completed.
-// 9. [Stub] Enrutar al agente conversacional (IConversationalAgent).
-//    → TODO: implementar en el sprint de integración IA.
+// 7. Guard: si conversation.Status == "waiting_human" → AutomationRun = "skipped", no hay acción IA.
+//    El mensaje del paciente ya fue persistido en el paso 6 (siempre se guarda para auditoría).
+// 8. Enrutar al agente conversacional (IConversationalAgent).
+// 9. Marcar AutomationRun como completed.
 //
 // GARANTÍAS DE RESILIENCIA
 // ─────────────────────────
@@ -214,8 +214,7 @@ public sealed class WhatsAppInboundWorker : BackgroundService
                     lastOutboundWithVariant.Id, conversation.Id);
             }
 
-            // ── 6. Verificar consentimiento RGPD ──────────────────────────────
-            if (!patient.RgpdConsent)
+            // ── 6. Verificar consentimiento RGPD ──────────────────────────────            if (!patient.RgpdConsent)
             {
                 _logger.LogInformation(
                     "[WAWorker] Paciente sin consentimiento RGPD. " +
@@ -228,7 +227,26 @@ public sealed class WhatsAppInboundWorker : BackgroundService
                 return;
             }
 
-            // ── 7. Enrutar al agente conversacional ───────────────────────────
+            // ── 7. Guard: conversación en espera de intervención humana ─────────
+            // SEC-01 / GAP-01: si la conversación ya está en "waiting_human",
+            // la IA NO debe responder. El mensaje se persistió en el paso 5
+            // (siempre se guarda para auditoría) pero el pipeline se detiene aquí.
+            // El operador humano verá el mensaje en el dashboard y responderá.
+            if (conversation.Status == "waiting_human")
+            {
+                _logger.LogInformation(
+                    "[WAWorker] Conversación en espera humana — se omite el agente IA. " +
+                    "ConvId={ConvId} PatientId={PatientId} MessageSid={Sid}",
+                    conversation.Id, patient.Id, job.MessageSid);
+
+                run.ItemsProcessed = 1;
+                run.ItemsSucceeded = 1;
+                await CompleteRunAsync(db, run, "skipped",
+                    "Conversación en espera de intervención humana (waiting_human)", ct);
+                return;
+            }
+
+            // ── 8. Enrutar al agente conversacional ───────────────────────────
             var agent = sp.GetRequiredService<IConversationalAgent>();
 
             // P0: filtro TenantId obligatorio para garantizar aislamiento multi-tenant (ADR-001)
@@ -255,6 +273,23 @@ public sealed class WhatsAppInboundWorker : BackgroundService
 
             var tenantEntity = await db.Tenants.FindAsync([job.TenantId], ct);
 
+            // GAP-02: calcular la hora local del tenant para el LLM.
+            // TZConvert.TryGetTimeZoneInfo admite IDs IANA y Windows por igual.
+            DateTimeOffset? tenantLocalNow = null;
+            var tenantTz = tenantEntity?.TimeZone;
+            if (!string.IsNullOrWhiteSpace(tenantTz) &&
+                TZConvert.TryGetTimeZoneInfo(tenantTz, out var tzInfo))
+            {
+                tenantLocalNow = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, tzInfo);
+            }
+            else if (!string.IsNullOrWhiteSpace(tenantTz))
+            {
+                _logger.LogWarning(
+                    "[WAWorker] TimeZone del tenant no reconocido: '{Tz}'. " +
+                    "LocalNow no se pasará al agente. TenantId={TenantId}",
+                    tenantTz, job.TenantId);
+            }
+
             var agentCtx = new AgentContext
             {
                 TenantId              = job.TenantId,
@@ -275,6 +310,7 @@ public sealed class WhatsAppInboundWorker : BackgroundService
                 DiscountMaxPct        = discountMaxPct,
                 ClinicName            = tenantEntity?.Name ?? "la clínica",
                 LanguageCode          = "es",
+                LocalNow              = tenantLocalNow,   // GAP-02
             };
 
             var agentResult = await agent.HandleAsync(agentCtx, ct);
@@ -343,7 +379,7 @@ public sealed class WhatsAppInboundWorker : BackgroundService
                 }
             }
 
-            // ── 8. Completar AutomationRun ────────────────────────────────────
+            // ── 9. Completar AutomationRun ────────────────────────────────────
             run.ItemsProcessed = 1;
             run.ItemsSucceeded = 1;
             await CompleteRunAsync(db, run, "completed", errorMessage: null, ct);

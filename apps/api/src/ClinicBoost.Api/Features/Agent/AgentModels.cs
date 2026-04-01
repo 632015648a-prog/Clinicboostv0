@@ -138,6 +138,16 @@ public sealed record AgentContext
 
     /// <summary>Idioma preferido de la clínica (es | en | ca | …).</summary>
     public required string  LanguageCode    { get; init; }
+
+    // ── Fecha/hora local del tenant ────────────────────────────────────────
+    /// <summary>
+    /// Fecha y hora actuales en la zona horaria del tenant (GAP-02).
+    /// Calculada en el worker con TZConvert.GetTimeZoneInfo(tenant.TimeZone).
+    /// Null si el tenant no tiene TimeZone configurado o el IANA id es inválido.
+    /// El SystemPromptBuilder la incluye en el prompt para que el LLM
+    /// razone correctamente sobre horarios y disponibilidad.
+    /// </summary>
+    public DateTimeOffset? LocalNow { get; init; }
 }
 
 // ── Resultado del agente ─────────────────────────────────────────────────────

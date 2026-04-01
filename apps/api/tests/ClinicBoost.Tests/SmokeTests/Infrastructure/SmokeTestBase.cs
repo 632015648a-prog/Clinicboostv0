@@ -1,11 +1,13 @@
 using System.Net;
 using System.Text;
 using ClinicBoost.Api.Infrastructure.Database;
+using ClinicBoost.Api.Infrastructure.Idempotency;
 using ClinicBoost.Domain.Automation;
 using ClinicBoost.Domain.Conversations;
 using ClinicBoost.Domain.Patients;
 using ClinicBoost.Domain.Tenants;
 using Microsoft.EntityFrameworkCore;
+using NSubstitute;
 
 namespace ClinicBoost.Tests.SmokeTests.Infrastructure;
 
@@ -184,6 +186,34 @@ public static class SmokeFixtures
         db.RuleConfigs.Add(rule);
         await db.SaveChangesAsync();
         return rule;
+    }
+
+    // ── Helpers de idempotencia ───────────────────────────────────────────────
+
+    /// <summary>
+    /// Crea un IIdempotencyService mockeado que siempre devuelve "evento nuevo"
+    /// (permite todo procesamiento). Útil en la mayoría de smoke tests donde
+    /// no se quiere testear la idempotencia en sí.
+    /// </summary>
+    public static IIdempotencyService BuildIdempotencyAllowAll()
+    {
+        var svc = Substitute.For<IIdempotencyService>();
+
+        // Sobrecarga sin payload tipado
+        svc.TryProcessAsync(
+                Arg.Any<string>(), Arg.Any<string>(),
+                Arg.Any<Guid?>(),  Arg.Any<string?>(),
+                Arg.Any<string?>(), Arg.Any<CancellationToken>())
+           .Returns(IdempotencyResult.NewEvent(Guid.NewGuid(), DateTimeOffset.UtcNow));
+
+        // Sobrecarga tipada genérica
+        svc.TryProcessAsync<object>(
+                Arg.Any<string>(), Arg.Any<string>(),
+                Arg.Any<object>(), Arg.Any<Guid?>(),
+                Arg.Any<string?>(), Arg.Any<CancellationToken>())
+           .Returns(IdempotencyResult.NewEvent(Guid.NewGuid(), DateTimeOffset.UtcNow));
+
+        return svc;
     }
 
     // ── Fake HTTP handlers ────────────────────────────────────────────────────

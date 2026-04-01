@@ -54,6 +54,15 @@ public sealed class SystemPromptBuilder
             El nombre del paciente es {ctx.PatientName}.
             """);
 
+        // GAP-02: hora local del tenant para razonamiento de disponibilidad horaria
+        if (ctx.LocalNow.HasValue)
+        {
+            sb.AppendLine($"""
+                La fecha y hora actuales en la clínica son: {ctx.LocalNow.Value:dddd, dd MMMM yyyy, HH:mm} (hora local).
+                Usa esta información cuando el paciente pregunte por disponibilidad horaria o cuando necesites razonar sobre horarios.
+                """);
+        }
+
         // ── Hard limits — siempre presentes ───────────────────────────────
         sb.AppendLine($"""
 

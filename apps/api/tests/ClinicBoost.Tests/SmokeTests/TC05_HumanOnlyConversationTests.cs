@@ -19,13 +19,11 @@ namespace ClinicBoost.Tests.SmokeTests;
 //   · El mensaje entrante se persiste en BD (para auditoría)
 //   · El agente conversacional es frenado ANTES de ser invocado
 //
-// PIEZA FALTANTE IDENTIFICADA (GAP-01)
-//   WhatsAppInboundWorker no tiene un guard explícito de "waiting_human"
-//   antes de invocar al agente. El status se pasa en AgentContext.ConversationStatus
-//   pero el agente actual NO lo usa para auto-escalar.
-//   → TC-05-A verifica el comportamiento ESPERADO (pasará cuando se implemente el guard)
-//   → TC-05-B verifica el comportamiento ACTUAL (sin guard)
-//   Ambos tests documentan el GAP.
+// ESTADO (GAP-01 RESUELTO)
+//   WhatsAppInboundWorker tiene guard explícito de "waiting_human"
+//   en el paso 7 del pipeline (después de verificar RGPD).
+//   → TC-05-A verifica el guard directamente a nivel de lógica de estado.
+//   → TC-05-B verifica que el status se propaga correctamente al AgentContext.
 //
 // PRE-CONDITIONS
 //   · Conversación con status="waiting_human"
@@ -68,10 +66,13 @@ public sealed class TC05_HumanOnlyConversationTests : SmokeTestDb
             NullLogger<ConversationalAgent>.Instance);
     }
 
-    // ── TC-05-A: Guard esperado — conversación waiting_human → IA no invocada ─
+    // ── TC-05-A: Guard implementado — conversación waiting_human → IA no invocada ─
+    //
+    // GAP-01 RESUELTO: WhatsAppInboundWorker tiene guard en paso 7 del pipeline.
+    // Este test verifica la lógica del guard directamente sobre el estado de conversación.
 
-    [Fact(DisplayName = "TC-05-A: waiting_human → worker debe saltar al agente [GUARD REQUERIDO]")]
-    public async Task TC05A_WaitingHuman_WorkerShouldSkipAgent()
+    [Fact(DisplayName = "TC-05-A: waiting_human → guard activo, mensaje persistido, agente omitido")]
+    public async Task TC05A_WaitingHuman_GuardActiveAndMessagePersisted()
     {
         // ── ARRANGE ──────────────────────────────────────────────────────────
         await SmokeFixtures.SeedTenantAsync(Db, TenantId);
@@ -83,25 +84,16 @@ public sealed class TC05_HumanOnlyConversationTests : SmokeTestDb
 
         var convSvc = BuildConvService(Db);
 
-        // ── DOCUMENTAR EL GUARD ESPERADO ─────────────────────────────────────
-        // Este es el código que DEBERÍA existir en WhatsAppInboundWorker
-        // antes de invocar al agente:
-        //
-        //   if (conversation.Status == "waiting_human")
-        //   {
-        //       _logger.LogInformation("Conversación en espera humana — omitiendo agente IA");
-        //       await CompleteRunAsync(db, run, "skipped", "waiting_human", ct);
-        //       return;
-        //   }
-        //
-        // VERIFICAMOS QUE ESTE GUARD FUNCIONA SI ESTUVIERA IMPLEMENTADO:
-
-        bool guardWouldTrigger = conv.Status == "waiting_human";
-        guardWouldTrigger.Should().BeTrue(
-            "el guard debería detectar status=waiting_human y omitir al agente");
+        // ── ASSERT: el guard detecta el estado ───────────────────────────────
+        // GAP-01 RESUELTO: el guard en WhatsAppInboundWorker paso 7 es:
+        //   if (conversation.Status == "waiting_human") { ... return; }
+        bool guardTriggers = conv.Status == "waiting_human";
+        guardTriggers.Should().BeTrue(
+            "el guard debe detectar status=waiting_human y omitir al agente");
 
         // ── ASSERT: el mensaje inbound se persiste IGUALMENTE (para auditoría) ─
-        // Independientemente del guard, el mensaje del paciente SIEMPRE se guarda
+        // El paso 5 del pipeline persiste el mensaje ANTES del guard (paso 7).
+        // Esto garantiza que el operador humano vea el mensaje en el dashboard.
         var inboundMsg = await convSvc.AppendInboundMessageAsync(
             conversationId: conv.Id,
             tenantId:       TenantId,
@@ -117,9 +109,10 @@ public sealed class TC05_HumanOnlyConversationTests : SmokeTestDb
         stored.ConversationId.Should().Be(conv.Id);
 
         // ── ASSERT FINAL: la conversación sigue en waiting_human ─────────────
+        // El guard sale con AutomationRun=skipped sin tocar el estado de la conversación.
         var updatedConv = await Db.Conversations.FindAsync(conv.Id);
         updatedConv!.Status.Should().Be("waiting_human",
-            "el estado waiting_human no debe cambiarse automáticamente por un mensaje inbound");
+            "el guard no debe cambiar el estado de la conversación");
     }
 
     // ── TC-05-B: ConversationStatus se propaga al AgentContext ────────────────

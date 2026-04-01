@@ -1,5 +1,6 @@
 using ClinicBoost.Api.Features.Variants;
 using ClinicBoost.Api.Infrastructure.Database;
+using ClinicBoost.Api.Infrastructure.Idempotency;
 using ClinicBoost.Domain.Variants;
 using ClinicBoost.Domain.Conversations;
 using Microsoft.EntityFrameworkCore;
@@ -13,6 +14,11 @@ namespace ClinicBoost.Api.Features.Webhooks.WhatsApp.Status;
 //
 // FLUJO POR TRANSICIÓN DE ESTADO
 // ──────────────────────────────
+//  0. Idempotencia (SEC-02 / GAP-04 resuelto):
+//     · Clave: ("twilio.message_status", "{MessageSid}_{MessageStatus}", tenantId).
+//     · Si Twilio re-entrega el mismo status webhook, se retorna sin insertar
+//       un MessageDeliveryEvent duplicado ni re-actualizar el Message.
+//
 //  1. Buscar Message por (TenantId, ProviderMessageId = MessageSid).
 //     · Si no existe: crear el evento de entregabilidad con MessageId = null
 //       y retornar.  El mensaje puede haberse enviado por otra instancia o
@@ -62,15 +68,18 @@ public sealed class MessageStatusService : IMessageStatusService
 
     private readonly AppDbContext                   _db;
     private readonly IVariantTrackingService         _variantTracking;
+    private readonly IIdempotencyService             _idempotency;
     private readonly ILogger<MessageStatusService>   _logger;
 
     public MessageStatusService(
         AppDbContext                  db,
         IVariantTrackingService       variantTracking,
+        IIdempotencyService           idempotency,
         ILogger<MessageStatusService> logger)
     {
         _db              = db;
         _variantTracking = variantTracking;
+        _idempotency     = idempotency;
         _logger          = logger;
     }
 
@@ -81,6 +90,27 @@ public sealed class MessageStatusService : IMessageStatusService
         CancellationToken          ct = default)
     {
         var now = DateTimeOffset.UtcNow;
+
+        // ── 0. Idempotencia: evitar procesamiento duplicado de re-entregas ────
+        // Clave única por (MessageSid, MessageStatus, tenantId):
+        //   un webhook "sent" para el mismo SID siempre produce los mismos efectos,
+        //   por lo que re-entregarlo es seguro de ignorar.
+        var idempKey = $"{request.MessageSid}_{request.MessageStatus}";
+        var idempResult = await _idempotency.TryProcessAsync(
+            eventType: "twilio.message_status",
+            eventId:   idempKey,
+            tenantId:  tenantId,
+            ct:        ct);
+
+        if (!idempResult.ShouldProcess)
+        {
+            _logger.LogInformation(
+                "[MsgStatus] Webhook duplicado ignorado. " +
+                "MessageSid={Sid} Status={Status} FirstProcessedAt={First} TenantId={TenantId}",
+                request.MessageSid, request.MessageStatus,
+                idempResult.FirstProcessedAt, tenantId);
+            return;
+        }
 
         // ── 1. Buscar Message por ProviderMessageId ───────────────────────────
         var message = await _db.Messages

@@ -1,6 +1,7 @@
 using ClinicBoost.Api.Features.Variants;
 using ClinicBoost.Api.Features.Webhooks.WhatsApp.Status;
 using ClinicBoost.Api.Infrastructure.Database;
+using ClinicBoost.Api.Infrastructure.Idempotency;
 using ClinicBoost.Domain.Conversations;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
@@ -55,12 +56,24 @@ public sealed class TC06_TwilioStatusWebhookTests : SmokeTestDb
 {
     // ── Helpers de construcción ───────────────────────────────────────────────
 
-    private MessageStatusService BuildSut()
+    /// <summary>
+    /// Construye el SUT con un IIdempotencyService que permite todos los eventos
+    /// (simula primera recepción, no duplicado).
+    /// </summary>
+    private MessageStatusService BuildSut() =>
+        BuildSut(SmokeFixtures.BuildIdempotencyAllowAll());
+
+    /// <summary>
+    /// Construye el SUT con un IIdempotencyService personalizado para tests de
+    /// comportamiento de idempotencia (TC-06-F).
+    /// </summary>
+    private MessageStatusService BuildSut(IIdempotencyService idempotency)
     {
         var variantTracking = Substitute.For<IVariantTrackingService>();
         return new MessageStatusService(
             Db,
             variantTracking,
+            idempotency,
             NullLogger<MessageStatusService>.Instance);
     }
 
@@ -257,8 +270,66 @@ public sealed class TC06_TwilioStatusWebhookTests : SmokeTestDb
             "el estado final del mensaje debe ser el más avanzado recibido");
     }
 
-    // ── TC-06-G: Aislamiento multi-tenant en DeliveryEvents ──────────────────
+    // ── TC-06-H: Webhook duplicado exacto → idempotencia, sin DeliveryEvent doble
+    //
+    // SEC-02 / GAP-04 RESUELTO: MessageStatusService ahora usa IIdempotencyService.
+    // Clave: "twilio.message_status" + "{MessageSid}_{MessageStatus}".
+    // Si Twilio re-entrega exactamente el mismo evento (mismo SID + mismo status),
+    // debe ignorarse → no se crea un DeliveryEvent duplicado.
 
+    [Fact(DisplayName = "TC-06-H: webhook duplicado exacto → idempotencia activa, sin DeliveryEvent doble")]
+    public async Task TC06H_DuplicateWebhook_IdempotencyPreventsDoubleInsert()
+    {
+        // ── ARRANGE ──────────────────────────────────────────────────────────
+        var msg = await SeedMessageAsync("SMsmoke_tc06_H", "sent");
+
+        // Mock de idempotencia con comportamiento real:
+        // primera llamada → ShouldProcess=true
+        // segunda llamada (mismo SID+status) → ShouldProcess=false (duplicado)
+        var idempotency = Substitute.For<IIdempotencyService>();
+        var firstCall   = true;
+        idempotency
+            .TryProcessAsync(
+                Arg.Any<string>(), Arg.Any<string>(),
+                Arg.Any<Guid?>(),  Arg.Any<string?>(),
+                Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                if (firstCall)
+                {
+                    firstCall = false;
+                    return Task.FromResult(IdempotencyResult.NewEvent(Guid.NewGuid(), DateTimeOffset.UtcNow));
+                }
+                // Segunda llamada: evento ya procesado
+                return Task.FromResult(IdempotencyResult.Duplicate(Guid.NewGuid(), DateTimeOffset.UtcNow.AddSeconds(-1)));
+            });
+
+        var sut = BuildSut(idempotency);
+        var req = BuildRequest("SMsmoke_tc06_H", "delivered");
+
+        // ── ACT: primera entrega (procesada) ──────────────────────────────────
+        await sut.ProcessAsync(TenantId, req);
+
+        // ── ACT: re-entrega exacta (duplicado — Twilio reintenta por timeout) ──
+        // La idempotencia bloquea la segunda ejecución.
+        await sut.ProcessAsync(TenantId, req);
+
+        // ── ASSERT ───────────────────────────────────────────────────────────
+
+        // Solo debe existir UN DeliveryEvent, no dos
+        var events = await Db.MessageDeliveryEvents
+            .Where(e => e.ProviderMessageId == "SMsmoke_tc06_H")
+            .ToListAsync();
+        events.Should().HaveCount(1,
+            "SEC-02/GAP-04: un webhook duplicado exacto (mismo SID + mismo status) " +
+            "no debe generar un segundo DeliveryEvent");
+
+        // El Message.Status sigue siendo "delivered" (correcto)
+        var updatedMsg = await Db.Messages.FindAsync(msg.Id);
+        updatedMsg!.Status.Should().Be("delivered");
+    }
+
+    // ── TC-06-G: Aislamiento multi-tenant en DeliveryEvents ──────────────────
     [Fact(DisplayName = "TC-06-G: DeliveryEvents filtrados por TenantId — no hay cross-tenant")]
     public async Task TC06G_DeliveryEvents_IsolatedByTenant()
     {

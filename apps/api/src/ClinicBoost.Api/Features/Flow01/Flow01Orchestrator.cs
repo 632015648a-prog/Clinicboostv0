@@ -124,6 +124,38 @@ public sealed class Flow01Orchestrator
             return Flow01Result.Skipped(Guid.Empty, "Evento ya procesado (idempotencia).");
         }
 
+        // ── 1b. GAP-03: Ventana máxima de procesamiento (MaxDelayMinutes) ────────
+        // Si el job llegó con demasiado retraso (p. ej. la cola estaba bloqueada),
+        // enviar el WA ahora sería confuso para el paciente.
+        // Se omite el envío y se registra la métrica con motivo "max_delay_exceeded".
+        var elapsedSinceCall = DateTimeOffset.UtcNow - callReceivedAt;
+        if (elapsedSinceCall.TotalMinutes > _opts.MaxDelayMinutes)
+        {
+            _logger.LogWarning(
+                "[Flow01] Ventana máxima superada. CallSid={CallSid} " +
+                "Elapsed={Elapsed:F1} min MaxDelay={Max} min TenantId={TenantId}. " +
+                "Se omite el envío.",
+                callSid, elapsedSinceCall.TotalMinutes, _opts.MaxDelayMinutes, tenantId);
+
+            await _metrics.RecordAsync(new FlowMetricsEvent
+            {
+                TenantId      = tenantId,
+                FlowId        = "flow_01",
+                MetricType    = "flow_skipped",
+                CorrelationId = correlationId,
+                Metadata      = JsonSerializer.Serialize(new
+                {
+                    reason             = "max_delay_exceeded",
+                    elapsed_minutes    = Math.Round(elapsedSinceCall.TotalMinutes, 1),
+                    max_delay_minutes  = _opts.MaxDelayMinutes,
+                    call_sid           = callSid,
+                }),
+            }, ct);
+
+            return Flow01Result.Skipped(Guid.Empty,
+                $"Ventana máxima superada: {elapsedSinceCall.TotalMinutes:F1} min > {_opts.MaxDelayMinutes} min permitidos.");
+        }
+
         // ── 2. Registrar métrica: llamada perdida recibida ────────────────────
         await _metrics.RecordAsync(new FlowMetricsEvent
         {
