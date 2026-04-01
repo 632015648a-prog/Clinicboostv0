@@ -18,6 +18,7 @@ using ClinicBoost.Api.Features.Flow01;
 using ClinicBoost.Api.Features.Audit;
 using ClinicBoost.Api.Features.Variants;
 using ClinicBoost.Api.Features.Dashboard;
+using ClinicBoost.Api.Features.Conversations;
 using FluentValidation;
 using System.Text;
 
@@ -382,6 +383,15 @@ public static class ServiceCollectionExtensions
         services.AddAuditSecurityFeature(config);
         services.AddVariantTrackingFeature();
         services.AddDashboardFeature();
+        services.AddConversationInboxFeature();
+        return services;
+    }
+
+    // ── Conversation Inbox (operacional) ──────────────────────────────────────
+    public static IServiceCollection AddConversationInboxFeature(
+        this IServiceCollection services)
+    {
+        services.AddScoped<IConversationInboxService, ConversationInboxService>();
         return services;
     }
 
@@ -457,6 +467,7 @@ public static class EndpointRouteBuilderExtensions
         app.MapAuthEndpoints();
         app.MapVariantEndpoints();
         app.MapDashboardEndpoints();
+        app.MapConversationEndpoints();
         return app;
     }
 }

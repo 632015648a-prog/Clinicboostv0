@@ -5,6 +5,7 @@ import { supabase } from './lib/supabase'
 
 import DashboardPage from './pages/DashboardPage'
 import LoginPage     from './pages/LoginPage'
+import InboxPage     from './pages/InboxPage'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -64,6 +65,15 @@ export default function App() {
             element={
               <AuthGuard>
                 <DashboardPage />
+              </AuthGuard>
+            }
+          />
+
+          <Route
+            path="/inbox"
+            element={
+              <AuthGuard>
+                <InboxPage />
               </AuthGuard>
             }
           />

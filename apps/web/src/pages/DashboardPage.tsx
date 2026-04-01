@@ -13,6 +13,7 @@
  */
 
 import { useState, useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import {
   useDashboardSummary,
   useMessageDelivery,
@@ -272,9 +273,24 @@ export default function DashboardPage() {
               <p className="text-xs text-gray-500">Dashboard operacional</p>
             </div>
           </div>
-          <span className="text-xs text-gray-400">
-            {filters.dateFrom} → {filters.dateTo}
-          </span>
+          <div className="flex items-center gap-3">
+            {/* Enlace a Bandeja con badge de waiting_human */}
+            <Link
+              to="/inbox"
+              className="relative flex items-center gap-2 rounded-lg bg-indigo-50 hover:bg-indigo-100
+                         text-indigo-700 text-xs font-semibold px-3 py-1.5 transition-colors"
+            >
+              💬 Bandeja
+              {(summary.data?.pendingHumanHandoff ?? 0) > 0 && (
+                <span className="bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
+                  {summary.data!.pendingHumanHandoff}
+                </span>
+              )}
+            </Link>
+            <span className="text-xs text-gray-400">
+              {filters.dateFrom} → {filters.dateTo}
+            </span>
+          </div>
         </div>
       </header>
 
@@ -338,12 +354,20 @@ export default function DashboardPage() {
                   <p className="text-sm font-semibold text-amber-800">
                     {summary.data?.pendingHumanHandoff} conversación{summary.data!.pendingHumanHandoff > 1 ? 'es' : ''} esperando atención humana
                   </p>
-                  <button
-                    onClick={() => { setHumanOnly(true); setConvPage(1) }}
-                    className="text-xs text-amber-700 underline hover:no-underline"
-                  >
-                    Ver solo estas →
-                  </button>
+                  <div className="flex items-center gap-3 mt-1">
+                    <button
+                      onClick={() => { setHumanOnly(true); setConvPage(1) }}
+                      className="text-xs text-amber-700 underline hover:no-underline"
+                    >
+                      Ver en lista →
+                    </button>
+                    <Link
+                      to="/inbox?status=waiting_human"
+                      className="text-xs text-amber-700 font-semibold underline hover:no-underline"
+                    >
+                      Abrir Bandeja →
+                    </Link>
+                  </div>
                 </div>
               </div>
             )}
@@ -480,15 +504,23 @@ export default function DashboardPage() {
                 </span>
               )}
             </h2>
-            <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={humanOnly}
-                onChange={e => { setHumanOnly(e.target.checked); setConvPage(1) }}
-                className="rounded"
-              />
-              Solo esperan humano
-            </label>
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={humanOnly}
+                  onChange={e => { setHumanOnly(e.target.checked); setConvPage(1) }}
+                  className="rounded"
+                />
+                Solo esperan humano
+              </label>
+              <Link
+                to="/inbox"
+                className="text-xs text-indigo-600 hover:underline font-medium"
+              >
+                Ver bandeja →
+              </Link>
+            </div>
           </div>
 
           {convs.isLoading ? (
@@ -501,7 +533,10 @@ export default function DashboardPage() {
             <>
               <div className="divide-y divide-gray-50">
                 {convs.data!.items.map(c => (
-                  <div key={c.conversationId} className="px-5 py-3 hover:bg-gray-50/50 transition-colors">
+                  <div
+                    key={c.conversationId}
+                    className="px-5 py-3 hover:bg-gray-50/50 transition-colors"
+                  >
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
