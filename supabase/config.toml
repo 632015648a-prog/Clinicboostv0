@@ -11,8 +11,6 @@ max_rows = 1000
 port = 54322
 shadow_port = 54320
 major_version = 15
-# Ruta explícita al seed de desarrollo (por defecto Supabase busca supabase/seed.sql)
-seed_files = ["supabase/seed/dev_seed.sql"]
 
 [studio]
 port = 54323
@@ -25,9 +23,6 @@ pop3_port = 54326
 
 [storage]
 file_size_limit = "50MiB"
-enabled = false   # Deshabilitado en local: ClinicBoost no usa Storage de archivos;
-                  # evita que el contenedor supabase_storage falle en Windows Docker.
-                  # Para habilitar en producción: enabled = true
 
 [auth]
 site_url = "http://localhost:5173"
