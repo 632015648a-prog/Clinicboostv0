@@ -197,7 +197,76 @@ CREATE INDEX IF NOT EXISTS ix_messages_variant_id
     WHERE message_variant_id IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
--- 4. Añadir message_variant_id a message_delivery_events
+-- 4. Crear tabla message_delivery_events (si no existe)
+--
+-- Evento inmutable de entregabilidad de un mensaje outbound.
+-- Una fila por callback de estado de Twilio: sent → delivered → read | failed.
+-- INSERT-only: nunca se actualiza ni borra (trazabilidad RGPD + auditoría).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS message_delivery_events (
+    id                   uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    -- Claves de correlación
+    tenant_id            uuid        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    message_id           uuid        REFERENCES messages(id) ON DELETE SET NULL,
+    conversation_id      uuid        REFERENCES conversations(id) ON DELETE SET NULL,
+    provider_message_id  text        NOT NULL,   -- Twilio MessageSid (SM… / MM…)
+
+    -- Estado reportado por Twilio
+    status               text        NOT NULL
+                           CHECK (status IN ('sent','delivered','read','failed','undelivered')),
+
+    -- Dimensiones de agrupación (analytics por flujo y variante)
+    flow_id              text,
+    template_id          text,
+    message_variant      text,       -- 'A', 'B', 'control', etc.
+    message_variant_id   uuid        REFERENCES message_variants(id) ON DELETE SET NULL,
+
+    channel              text        NOT NULL CHECK (channel IN ('whatsapp','sms')),
+
+    -- Error (cuando status = 'failed' | 'undelivered')
+    error_code           text,
+    error_message        text,
+
+    -- Timestamps
+    provider_timestamp   timestamptz,
+    occurred_at          timestamptz NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE  message_delivery_events IS
+    'Evento inmutable de entregabilidad por callback de Twilio. '
+    'INSERT-only. Una fila por transición de estado recibida. '
+    'Fuente de verdad para dashboards de entregabilidad por flujo y variante A/B.';
+
+-- Índices de rendimiento
+CREATE INDEX IF NOT EXISTS ix_mde_tenant_occurred
+    ON message_delivery_events (tenant_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS ix_mde_provider_message_id
+    ON message_delivery_events (provider_message_id);
+CREATE INDEX IF NOT EXISTS ix_mde_message_id
+    ON message_delivery_events (message_id)
+    WHERE message_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_mde_flow_template
+    ON message_delivery_events (tenant_id, flow_id, template_id, occurred_at DESC)
+    WHERE flow_id IS NOT NULL;
+
+-- RLS
+ALTER TABLE message_delivery_events ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "mde_tenant_isolation"
+    ON message_delivery_events FOR ALL
+    USING      (tenant_id = current_tenant_id())
+    WITH CHECK (tenant_id = current_tenant_id());
+
+-- Permisos
+GRANT SELECT, INSERT ON message_delivery_events TO app_user;
+REVOKE UPDATE, DELETE ON message_delivery_events FROM app_user;
+
+
+-- ---------------------------------------------------------------------------
+-- 4b. Añadir message_variant_id a message_delivery_events
+--     (columna ya incluida en la definición anterior; este bloque es
+--      idempotente gracias a IF NOT EXISTS en el ALTER TABLE)
 --
 -- Permite agregar entregabilidad por variante sin JOIN a messages.
 -- Se rellena al insertar el evento si el Message padre tiene variant_id.
