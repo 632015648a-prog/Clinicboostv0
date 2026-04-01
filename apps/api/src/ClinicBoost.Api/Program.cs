@@ -94,6 +94,18 @@ try
         });
     }
 
+    // Scalar en Staging: solo accesible desde red local (sin auth pública)
+    if (app.Environment.IsEnvironment("Staging"))
+    {
+        app.MapOpenApi();
+        app.MapScalarApiReference(opts =>
+        {
+            opts.Title       = "ClinicBoost API [STAGING]";
+            opts.Theme       = Scalar.AspNetCore.ScalarTheme.Purple;
+            opts.EndpointPathPrefix = "/scalar";
+        });
+    }
+
     // Cabeceras de seguridad (CSP, HSTS, X-Frame-Options…)
     // Colocar antes de UseAuthentication
     app.UseCspMiddleware();

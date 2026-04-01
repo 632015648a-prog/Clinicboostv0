@@ -19,6 +19,10 @@
 **/*.pfx
 **/*.p12
 
+# Staging secrets — NUNCA en git
+.env.staging
+.env.production
+
 # ─── Node / Frontend ─────────────────────────────────────────────────────────
 **/node_modules/
 **/dist/

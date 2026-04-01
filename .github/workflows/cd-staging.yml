@@ -1,0 +1,249 @@
+name: CD — Deploy Staging
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Despliega automáticamente a staging cuando se hace push a 'main'.
+#
+# PREREQS (configurar en GitHub → Settings → Secrets and variables → Actions):
+#
+#   Secrets de la aplicación:
+#     STAGING_DB_CONNECTION_STRING   — Npgsql connection string (app_user)
+#     STAGING_SUPABASE_URL           — https://<ref>.supabase.co
+#     STAGING_SUPABASE_ANON_KEY      — clave pública anon
+#     STAGING_SUPABASE_JWT_SECRET    — JWT secret de Supabase
+#     STAGING_TWILIO_ACCOUNT_SID     — ACxxxxxxxxxxxxxxxxxxxxxxxx
+#     STAGING_TWILIO_AUTH_TOKEN      — token de Twilio
+#     STAGING_TWILIO_WEBHOOK_BASE_URL — https://staging.clinicboost.es
+#     STAGING_OPENAI_API_KEY         — (opcional)
+#     STAGING_ANTHROPIC_API_KEY      — (opcional)
+#
+#   Variables del servidor:
+#     STAGING_HOST       — IP o hostname del servidor (e.g., 185.x.x.x)
+#     STAGING_SSH_USER   — usuario SSH (e.g., deploy)
+#     STAGING_SSH_KEY    — clave privada SSH (PEM, sin passphrase)
+#     STAGING_DOMAIN     — https://staging.clinicboost.es
+#
+# FLUJO:
+#   1. build-and-test — compila + tests API + type-check + build frontend
+#   2. build-images   — construye imágenes Docker con caché de layers
+#   3. deploy         — SSH al servidor, pull, reconstruye y levanta stack
+# ──────────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:      # Permite trigger manual desde GitHub UI
+
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: false   # No cancelar deploys en curso
+
+jobs:
+
+  # ── 1. CI: build + test ──────────────────────────────────────────────────────
+  build-and-test:
+    name: CI — Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: apps/web/package-lock.json
+
+      # ── Backend ──────────────────────────────────────────────────────────
+      - name: Restore .NET dependencies
+        working-directory: apps/api
+        run: dotnet restore
+
+      - name: Build API (Release)
+        working-directory: apps/api
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Run API tests
+        working-directory: apps/api
+        run: |
+          dotnet test \
+            --no-build \
+            --configuration Release \
+            --verbosity normal \
+            --logger "trx;LogFileName=test-results.trx" \
+            --results-directory ./test-results
+        continue-on-error: false
+
+      # ── Frontend ─────────────────────────────────────────────────────────
+      - name: Install frontend dependencies
+        working-directory: apps/web
+        run: npm ci
+
+      - name: Lint frontend
+        working-directory: apps/web
+        run: npm run lint
+
+      - name: Type check frontend
+        working-directory: apps/web
+        run: npx tsc --noEmit
+
+      # Build dummy (con URLs de staging) para verificar que compila
+      - name: Build frontend (staging check)
+        working-directory: apps/web
+        env:
+          VITE_SUPABASE_URL:      ${{ secrets.STAGING_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+          VITE_API_URL:           ${{ secrets.STAGING_DOMAIN }}
+        run: npm run build
+
+  # ── 2. Build Docker images ───────────────────────────────────────────────────
+  build-images:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Aquí podrías push a GHCR o Docker Hub si tienes registry configurado.
+      # Para staging simple, hacemos el build en el servidor directamente.
+      # Este step verifica que las imágenes compilan correctamente en CI.
+      - name: Build API image (verification)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          push: false
+          tags: clinicboost-api:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Web image (verification)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: false
+          tags: clinicboost-web:${{ github.sha }}
+          build-args: |
+            VITE_SUPABASE_URL=${{ secrets.STAGING_SUPABASE_URL }}
+            VITE_SUPABASE_ANON_KEY=${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+            VITE_API_URL=${{ secrets.STAGING_DOMAIN }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── 3. Deploy to staging server ─────────────────────────────────────────────
+  deploy:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: build-images
+    environment:
+      name: staging
+      url: ${{ secrets.STAGING_DOMAIN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host:     ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_SSH_USER }}
+          key:      ${{ secrets.STAGING_SSH_KEY }}
+          timeout:  120s
+          script: |
+            set -euo pipefail
+            echo "=== ClinicBoost Staging Deploy: $(date) ==="
+
+            # Ir al directorio del proyecto
+            cd /opt/clinicboost
+
+            # Pull del código más reciente
+            git pull origin main
+
+            # Escribir .env.staging desde variables de entorno (inyectadas vía SSH env)
+            # NOTA: en producción real, usar 'docker secret' o un vault
+            cat > .env.staging << 'ENVEOF'
+            DB_CONNECTION_STRING=${{ secrets.STAGING_DB_CONNECTION_STRING }}
+            SUPABASE_URL=${{ secrets.STAGING_SUPABASE_URL }}
+            SUPABASE_ANON_KEY=${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+            SUPABASE_JWT_SECRET=${{ secrets.STAGING_SUPABASE_JWT_SECRET }}
+            VITE_SUPABASE_URL=${{ secrets.STAGING_SUPABASE_URL }}
+            VITE_SUPABASE_ANON_KEY=${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+            VITE_API_URL=${{ secrets.STAGING_DOMAIN }}
+            CORS_ORIGIN_0=${{ secrets.STAGING_DOMAIN }}
+            TWILIO_ACCOUNT_SID=${{ secrets.STAGING_TWILIO_ACCOUNT_SID }}
+            TWILIO_AUTH_TOKEN=${{ secrets.STAGING_TWILIO_AUTH_TOKEN }}
+            TWILIO_WEBHOOK_BASE_URL=${{ secrets.STAGING_TWILIO_WEBHOOK_BASE_URL }}
+            OPENAI_API_KEY=${{ secrets.STAGING_OPENAI_API_KEY }}
+            ANTHROPIC_API_KEY=${{ secrets.STAGING_ANTHROPIC_API_KEY }}
+            CSP_REPORT_ONLY=true
+            ENVEOF
+
+            chmod 600 .env.staging
+
+            # Crear directorio de logs si no existe
+            mkdir -p logs/nginx logs/api
+
+            # Reconstruir imágenes y levantar
+            docker compose -f docker-compose.staging.yml --env-file .env.staging build --no-cache
+            docker compose -f docker-compose.staging.yml --env-file .env.staging up -d --remove-orphans
+
+            # Esperar a que la API esté lista (max 60s)
+            echo "Esperando a que la API esté lista..."
+            for i in $(seq 1 12); do
+              if curl -sf http://localhost/health/live > /dev/null 2>&1; then
+                echo "✅ API lista"
+                break
+              fi
+              echo "Intento $i/12..."
+              sleep 5
+            done
+
+            # Verificación final
+            curl -sf http://localhost/health/ready || (echo "❌ health/ready falló" && exit 1)
+            echo "✅ Deploy completado: $(date)"
+
+            # Limpiar imágenes no usadas
+            docker image prune -f
+
+  # ── 4. Smoke test post-deploy ────────────────────────────────────────────────
+  smoke-test:
+    name: Smoke Test
+    runs-on: ubuntu-latest
+    needs: deploy
+    steps:
+      - name: Health check — live
+        run: |
+          curl -sf "${{ secrets.STAGING_DOMAIN }}/health/live" \
+            | grep -q '"status":"live"' \
+            && echo "✅ /health/live OK" \
+            || (echo "❌ /health/live falló" && exit 1)
+
+      - name: Health check — ready
+        run: |
+          RESPONSE=$(curl -sf "${{ secrets.STAGING_DOMAIN }}/health/ready")
+          echo "$RESPONSE" | grep -q '"status":"Healthy"' \
+            && echo "✅ /health/ready OK" \
+            || (echo "❌ /health/ready falló: $RESPONSE" && exit 1)
+
+      - name: Frontend check
+        run: |
+          curl -sf "${{ secrets.STAGING_DOMAIN }}/" \
+            | grep -q "ClinicBoost" \
+            && echo "✅ Frontend OK" \
+            || (echo "❌ Frontend no responde" && exit 1)
+
+      - name: API 401 check (endpoint protegido sin token)
+        run: |
+          STATUS=$(curl -o /dev/null -s -w "%{http_code}" \
+            "${{ secrets.STAGING_DOMAIN }}/api/dashboard/summary")
+          [ "$STATUS" = "401" ] \
+            && echo "✅ Auth 401 OK" \
+            || (echo "❌ Esperaba 401, obtuve $STATUS" && exit 1)

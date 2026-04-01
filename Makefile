@@ -1,13 +1,16 @@
 # ============================================================
-# ClinicBoost — Makefile de desarrollo local
+# ClinicBoost — Makefile de desarrollo local + staging
 # Uso: make <target>
 # ============================================================
 
-.PHONY: help setup supabase-start supabase-stop db-reset api-run api-build api-test web-dev web-build lint
+.PHONY: help setup supabase-start supabase-stop db-reset api-run api-build api-test \
+        web-dev web-build lint dev \
+        staging-up staging-down staging-logs staging-ps staging-health \
+        staging-migrate staging-build
 
 help: ## Muestra esta ayuda
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
-	  awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	  awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-24s\033[0m %s\n", $$1, $$2}'
 
 # ─── Setup inicial ────────────────────────────────────────────────────────────
 setup: ## Primera configuración del proyecto
@@ -59,3 +62,42 @@ dev: ## Instrucciones para arrancar todo (requiere 3 terminales)
 	@echo "  Terminal 1: make supabase-start"
 	@echo "  Terminal 2: make api-run"
 	@echo "  Terminal 3: make web-dev"
+
+# ─── Staging (Docker Compose) ─────────────────────────────────────────────────
+staging-env-check: ## Verificar que .env.staging existe
+	@test -f .env.staging || (echo "❌ .env.staging no encontrado. Copia .env.staging.example y rellena los valores." && exit 1)
+	@echo "✅ .env.staging encontrado"
+
+staging-build: staging-env-check ## Construir imágenes Docker de staging
+	docker compose -f docker-compose.staging.yml --env-file .env.staging build
+
+staging-up: staging-env-check ## Levantar stack de staging
+	@mkdir -p logs/nginx logs/api
+	docker compose -f docker-compose.staging.yml --env-file .env.staging up -d --remove-orphans
+	@echo "✅ Stack staging levantado. Probando health..."
+	@sleep 5
+	@$(MAKE) staging-health
+
+staging-down: ## Parar stack de staging
+	docker compose -f docker-compose.staging.yml down
+
+staging-logs: ## Ver logs del stack de staging (follow)
+	docker compose -f docker-compose.staging.yml logs -f
+
+staging-ps: ## Estado de los contenedores de staging
+	docker compose -f docker-compose.staging.yml ps
+
+staging-health: ## Verificar health del stack de staging
+	@echo "── health/live ──────────────────────────"
+	@curl -sf http://localhost/health/live | python3 -m json.tool || echo "❌ /health/live falló"
+	@echo "── health/ready ─────────────────────────"
+	@curl -sf http://localhost/health/ready | python3 -m json.tool || echo "❌ /health/ready falló"
+
+staging-migrate: ## Aplicar migraciones a staging Cloud (requiere SUPABASE_ACCESS_TOKEN y STAGING_PROJECT_REF)
+	bash infra/scripts/migrate-staging.sh
+
+staging-restart-api: ## Reiniciar solo la API (sin rebuild)
+	docker compose -f docker-compose.staging.yml restart api
+
+staging-shell-api: ## Acceder al shell del contenedor API
+	docker compose -f docker-compose.staging.yml exec api sh

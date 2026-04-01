@@ -1,0 +1,165 @@
+# ============================================================
+# ClinicBoost — docker-compose.staging.yml
+#
+# Orquestación de staging: Web + API + Nginx reverse-proxy.
+# La base de datos está en Supabase Cloud (no en Docker).
+#
+# USO:
+#   # Copiar y rellenar variables de entorno:
+#   cp .env.staging.example .env.staging
+#   nano .env.staging
+#
+#   # Levantar el stack:
+#   docker compose -f docker-compose.staging.yml --env-file .env.staging up -d
+#
+#   # Ver logs:
+#   docker compose -f docker-compose.staging.yml logs -f
+#
+#   # Parar:
+#   docker compose -f docker-compose.staging.yml down
+#
+# ARQUITECTURA:
+#   nginx  :80  → web:3000  (SPA estática)
+#              → api:8080   (API .NET, solo rutas /api /auth /webhooks /health)
+#
+# NOTA DE SEGURIDAD:
+#   · Nunca commitear .env.staging al repositorio.
+#   · En producción real, usar Docker Secrets o un vault (Vault, Infisical).
+#   · Las cookies de sesión deben tener Secure=true y SameSite=Strict.
+# ============================================================
+
+name: clinicboost-staging
+
+services:
+
+  # ── Nginx reverse-proxy ──────────────────────────────────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: cb_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      # Descomentar si terminas TLS en nginx (no usando Cloudflare):
+      # - "443:443"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      # SPA estática (build de Vite):
+      - web_dist:/usr/share/nginx/html:ro
+      # Logs accesibles desde el host:
+      - ./logs/nginx:/var/log/nginx
+      # Certificados TLS (si no usas Cloudflare):
+      # - ./infra/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:80/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - cb_net
+
+  # ── Frontend React (build + copia a volumen) ─────────────────────────────
+  # Este servicio solo construye la SPA y copia el dist al volumen compartido.
+  # Nginx sirve los ficheros estáticos resultantes.
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_SUPABASE_URL:     ${VITE_SUPABASE_URL}
+        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
+        VITE_API_URL:          ${VITE_API_URL}
+    image: clinicboost-web:staging
+    container_name: cb_web_build
+    # Este contenedor solo sirve como builder — copia dist y sale
+    entrypoint: ["sh", "-c", "cp -r /usr/share/nginx/html/. /dist/ && echo 'Web build copied'"]
+    volumes:
+      - web_dist:/dist
+    restart: "no"
+
+  # ── Backend .NET API ─────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: clinicboost-api:staging
+    container_name: cb_api
+    restart: unless-stopped
+    expose:
+      - "8080"          # Solo accesible desde la red interna (nginx hace proxy)
+    environment:
+      ASPNETCORE_ENVIRONMENT: Staging
+      ASPNETCORE_URLS: http://+:8080
+
+      # ── Base de datos (Supabase Cloud) ──────────────────────
+      ConnectionStrings__Supabase: ${DB_CONNECTION_STRING}
+
+      # ── Supabase ────────────────────────────────────────────
+      Supabase__Url:       ${SUPABASE_URL}
+      Supabase__AnonKey:   ${SUPABASE_ANON_KEY}
+      Supabase__JwtSecret: ${SUPABASE_JWT_SECRET}
+
+      # ── CORS ────────────────────────────────────────────────
+      Cors__AllowedOrigins__0: ${CORS_ORIGIN_0}
+      Cors__AllowedOrigins__1: ${CORS_ORIGIN_1:-""}
+
+      # ── Twilio ──────────────────────────────────────────────
+      Twilio__AccountSid:     ${TWILIO_ACCOUNT_SID}
+      Twilio__AuthToken:      ${TWILIO_AUTH_TOKEN}
+      Twilio__WebhookBaseUrl: ${TWILIO_WEBHOOK_BASE_URL}
+
+      # ── OpenAI / Claude (Agente conversacional) ─────────────
+      OpenAI__ApiKey:     ${OPENAI_API_KEY:-""}
+      Anthropic__ApiKey:  ${ANTHROPIC_API_KEY:-""}
+
+      # ── CSP ─────────────────────────────────────────────────
+      Csp__ReportUri: ${CSP_REPORT_URI:-"/auth/csp-report"}
+      Csp__ReportOnly: ${CSP_REPORT_ONLY:-"false"}
+
+      # ── Logging ─────────────────────────────────────────────
+      Serilog__MinimumLevel__Default: Information
+
+      # ── ForwardedHeaders (Nginx como proxy) ─────────────────
+      # Nginx está en la misma red Docker; su IP es la del upstream.
+      # El middleware de .NET ya acepta loopback; si el contenedor
+      # Nginx tiene IP diferente, añadirla aquí:
+      # KnownProxies__0: "172.18.0.x"
+
+    volumes:
+      - ./logs/api:/app/logs
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - cb_net
+    # Limitar recursos en staging
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+# ── Volúmenes ────────────────────────────────────────────────────────────────
+volumes:
+  web_dist:
+    driver: local
+
+# ── Red interna ───────────────────────────────────────────────────────────────
+networks:
+  cb_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
