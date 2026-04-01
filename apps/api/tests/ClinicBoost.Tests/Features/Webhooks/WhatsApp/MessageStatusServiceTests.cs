@@ -1,9 +1,11 @@
+using ClinicBoost.Api.Features.Variants;
 using ClinicBoost.Api.Features.Webhooks.WhatsApp.Status;
 using ClinicBoost.Api.Infrastructure.Database;
 using ClinicBoost.Domain.Conversations;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using NSubstitute;
 
 namespace ClinicBoost.Tests.Features.Webhooks.WhatsApp;
 
@@ -33,8 +35,11 @@ public sealed class MessageStatusServiceTests
         return new AppDbContext(opts);
     }
 
-    private static MessageStatusService BuildSut(AppDbContext db) =>
-        new(db, NullLogger<MessageStatusService>.Instance);
+    private static MessageStatusService BuildSut(AppDbContext db)
+    {
+        var variantTracking = Substitute.For<IVariantTrackingService>();
+        return new MessageStatusService(db, variantTracking, NullLogger<MessageStatusService>.Instance);
+    }
 
     /// <summary>Crea y persiste un Message de prueba con status "sent".</summary>
     private static async Task<Message> SeedMessageAsync(

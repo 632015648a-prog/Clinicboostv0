@@ -6,7 +6,9 @@
 .PHONY: help setup supabase-start supabase-stop db-reset api-run api-build api-test \
         web-dev web-build lint dev \
         staging-up staging-down staging-logs staging-ps staging-health \
-        staging-migrate staging-build
+        staging-migrate staging-build \
+        smoke-tests smoke-tests-tc01 smoke-tests-tc02 smoke-tests-tc03 \
+        smoke-tests-tc04 smoke-tests-tc05 smoke-tests-tc06 smoke-tests-verbose
 
 help: ## Muestra esta ayuda
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -101,3 +103,28 @@ staging-restart-api: ## Reiniciar solo la API (sin rebuild)
 
 staging-shell-api: ## Acceder al shell del contenedor API
 	docker compose -f docker-compose.staging.yml exec api sh
+
+# ─── Smoke Tests E2E ──────────────────────────────────────────────────────────
+smoke-tests: ## Ejecutar suite completa de smoke tests E2E
+	bash infra/scripts/run-smoke-tests.sh
+
+smoke-tests-tc01: ## Smoke tests TC-01: llamada perdida → WhatsApp
+	TC=TC-01 bash infra/scripts/run-smoke-tests.sh
+
+smoke-tests-tc02: ## Smoke tests TC-02: paciente responde → IA responde
+	TC=TC-02 bash infra/scripts/run-smoke-tests.sh
+
+smoke-tests-tc03: ## Smoke tests TC-03: reserva → appointment → revenue
+	TC=TC-03 bash infra/scripts/run-smoke-tests.sh
+
+smoke-tests-tc04: ## Smoke tests TC-04: fuera de horario → timezone
+	TC=TC-04 bash infra/scripts/run-smoke-tests.sh
+
+smoke-tests-tc05: ## Smoke tests TC-05: conversation human-only
+	TC=TC-05 bash infra/scripts/run-smoke-tests.sh
+
+smoke-tests-tc06: ## Smoke tests TC-06: webhook estado Twilio
+	TC=TC-06 bash infra/scripts/run-smoke-tests.sh
+
+smoke-tests-verbose: ## Smoke tests con output detallado (debug)
+	VERBOSE=1 bash infra/scripts/run-smoke-tests.sh

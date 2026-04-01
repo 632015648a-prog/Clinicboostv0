@@ -1,5 +1,6 @@
 using System.Net;
 using ClinicBoost.Api.Features.Flow01;
+using ClinicBoost.Api.Features.Variants;
 using ClinicBoost.Api.Infrastructure.Database;
 using ClinicBoost.Api.Infrastructure.Idempotency;
 using ClinicBoost.Api.Infrastructure.Twilio;
@@ -87,16 +88,19 @@ public sealed class MissedCallWorkerIntegrationTests : IDisposable
             _db,
             Options.Create(_twilioOpts),
             factory,
+            Substitute.For<IVariantTrackingService>(),
             NullLogger<TwilioOutboundMessageSender>.Instance);
 
         var metrics    = new FlowMetricsService(_db, NullLogger<FlowMetricsService>.Instance);
         var idempotency = BuildIdempotencyAllowAll();
+        var variantTracking = Substitute.For<IVariantTrackingService>();
 
         return new Flow01Orchestrator(
             _db,
             sender,
             metrics,
             idempotency,
+            variantTracking,
             Options.Create(new Flow01Options
             {
                 DefaultTemplateSid = "HXintegration_template",

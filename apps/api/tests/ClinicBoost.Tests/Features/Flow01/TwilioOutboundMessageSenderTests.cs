@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using ClinicBoost.Api.Features.Flow01;
+using ClinicBoost.Api.Features.Variants;
 using ClinicBoost.Api.Infrastructure.Database;
 using ClinicBoost.Api.Infrastructure.Twilio;
 using ClinicBoost.Domain.Conversations;
@@ -66,6 +67,7 @@ public sealed class TwilioOutboundMessageSenderTests : IDisposable
             _db,
             Options.Create(_twilioOpts),
             factory,
+            Substitute.For<IVariantTrackingService>(),
             NullLogger<TwilioOutboundMessageSender>.Instance);
     }
 
@@ -348,6 +350,7 @@ public sealed class TwilioOutboundMessageSenderTests : IDisposable
         factory.CreateClient("Twilio").Returns(client);
 
         var sender  = new TwilioOutboundMessageSender(_db, Options.Create(_twilioOpts), factory,
+            Substitute.For<IVariantTrackingService>(),
             NullLogger<TwilioOutboundMessageSender>.Instance);
         var request = BuildRequest(body: "Mensaje pendiente");
 
