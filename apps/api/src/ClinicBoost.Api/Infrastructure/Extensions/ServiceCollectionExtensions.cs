@@ -17,6 +17,7 @@ using ClinicBoost.Api.Features.Calendar;
 using ClinicBoost.Api.Features.Flow01;
 using ClinicBoost.Api.Features.Audit;
 using ClinicBoost.Api.Features.Variants;
+using ClinicBoost.Api.Features.Dashboard;
 using FluentValidation;
 using System.Text;
 
@@ -380,6 +381,15 @@ public static class ServiceCollectionExtensions
         services.AddFlow01Feature(config);
         services.AddAuditSecurityFeature(config);
         services.AddVariantTrackingFeature();
+        services.AddDashboardFeature();
+        return services;
+    }
+
+    // ── Dashboard MVP ──────────────────────────────────────────────────────────
+    public static IServiceCollection AddDashboardFeature(
+        this IServiceCollection services)
+    {
+        services.AddScoped<IDashboardService, DashboardService>();
         return services;
     }
 
@@ -446,6 +456,7 @@ public static class EndpointRouteBuilderExtensions
         app.MapFlow01Endpoints();
         app.MapAuthEndpoints();
         app.MapVariantEndpoints();
+        app.MapDashboardEndpoints();
         return app;
     }
 }
