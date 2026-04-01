@@ -24,7 +24,8 @@
 -- ─────────
 -- · RLS activa en ambas tablas.
 -- · app_user no puede hacer bypass de RLS.
--- · Política: tenant_id = current_setting('app.tenant_id')::uuid
+-- · Política: tenant_id = current_tenant_id()
+--   current_tenant_id() soporta AMBAS rutas: JWT (Supabase Auth) y GUC (API .NET)
 --
 -- CONVENCIONES
 -- ────────────
