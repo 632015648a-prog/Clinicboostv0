@@ -36,15 +36,17 @@
 --   3. NULL / '' si ninguna está disponible
 -- ══════════════════════════════════════════════════════════════
 
--- Eliminar versiones anteriores para recrear con lógica combinada
-DROP FUNCTION IF EXISTS current_tenant_id();
-DROP FUNCTION IF EXISTS current_user_role();
-DROP FUNCTION IF EXISTS current_auth_user_id();
+-- Las funciones helper se REEMPLAZAN con CREATE OR REPLACE en lugar
+-- de DROP + CREATE, porque las políticas RLS creadas en 0005 ya
+-- dependen de ellas. DROP borraría las políticas en cascada.
+-- CREATE OR REPLACE actualiza el cuerpo manteniendo todas las dependencias.
 
 -- ─── current_tenant_id() ──────────────────────────────────────
 -- Devuelve el tenant_id activo para la sesión actual.
 -- Fuente 1: JWT claim 'tenant_id'  (frontend / Supabase Auth)
 -- Fuente 2: GUC app.tenant_id      (API .NET vía set_config)
+-- NOTA: la firma (sin argumentos → UUID) debe coincidir con la de 0005
+-- para que CREATE OR REPLACE funcione sin tocar las dependencias.
 CREATE OR REPLACE FUNCTION current_tenant_id()
 RETURNS UUID
 LANGUAGE plpgsql STABLE
