@@ -94,3 +94,22 @@ export interface InboxFilters {
   page?:          number
   pageSize?:      number
 }
+
+// ── Pending handoff (widget de polling del dashboard) ─────────────────────
+
+/** Fila del widget "intervención humana pendiente" en el dashboard. */
+export interface PendingHandoffItem {
+  conversationId: string
+  patientName:    string
+  patientPhone:   string
+  flowId:         string
+  /** Minutos desde la última actualización del estado (tiempo de espera aproximado). */
+  waitingMinutes: number
+  updatedAt:      string   // ISO 8601
+}
+
+/** Respuesta de GET /api/conversations/pending-handoff */
+export interface PendingHandoffResponse {
+  count: number
+  items: PendingHandoffItem[]
+}

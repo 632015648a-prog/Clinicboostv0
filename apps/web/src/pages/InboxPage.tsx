@@ -15,8 +15,8 @@
  * en pantalla completa con botón de volver.
  */
 
-import { useState, useCallback } from 'react'
-import { Link } from 'react-router-dom'
+import { useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   useInboxList,
   useConversationDetail,
@@ -114,7 +114,7 @@ function Spinner() {
 interface ActionPanelProps {
   conversationId: string
   currentStatus:  string
-  onDone:         () => void
+  onDone:         (newStatus: PatchableStatus) => void
 }
 
 function ActionPanel({ conversationId, currentStatus, onDone }: ActionPanelProps) {
@@ -126,7 +126,7 @@ function ActionPanel({ conversationId, currentStatus, onDone }: ActionPanelProps
     setErr(null)
     try {
       await patch.mutateAsync({ conversationId, body: { status: newStatus, note: note || undefined } })
-      onDone()
+      onDone(newStatus)
     } catch {
       setErr('No se pudo actualizar el estado. Inténtalo de nuevo.')
     }
@@ -230,9 +230,10 @@ function DetailPanel({ conversationId, onBack }: DetailPanelProps) {
 
   const currentStatus = statusOverride ?? detail.data?.status ?? ''
 
-  function handleStatusDone() {
-    // Optimistically reflect new status while cache invalidates
-    setStatusOverride(null)
+  function handleStatusDone(newStatus: PatchableStatus) {
+    // Actualización optimista: muestra el nuevo estado inmediatamente
+    // mientras React Query refresca el cache en background.
+    setStatusOverride(newStatus)
   }
 
   if (detail.isLoading) return <div className="flex-1"><Spinner /></div>
@@ -411,10 +412,20 @@ function ConvRow({ item, isSelected, onClick }: ConvRowProps) {
 // ─── Página principal ─────────────────────────────────────────────────────────
 
 export default function InboxPage() {
-  const [filters, setFilters] = useState<InboxFilters>({
-    status:   'all',
-    page:     1,
-    pageSize: 25,
+  const [searchParams] = useSearchParams()
+
+  const [filters, setFilters] = useState<InboxFilters>(() => {
+    const urlStatus  = searchParams.get('status') as ConversationStatus | 'all' | null
+    const validStatuses: (ConversationStatus | 'all')[] = [
+      'all', 'open', 'waiting_ai', 'waiting_human', 'resolved', 'expired', 'opted_out',
+    ]
+    return {
+      status:   validStatuses.includes(urlStatus as ConversationStatus | 'all')
+                  ? (urlStatus as ConversationStatus | 'all')
+                  : 'all',
+      page:     1,
+      pageSize: 25,
+    }
   })
   const [selectedId,   setSelectedId]   = useState<string | null>(null)
   const [showDetail,   setShowDetail]   = useState(false)   // para móvil

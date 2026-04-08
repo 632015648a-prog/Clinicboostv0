@@ -21,6 +21,7 @@ import {
   useConversations,
   useRevenueOverview,
 } from '../lib/useDashboard'
+import { usePendingHandoff } from '../lib/usePendingHandoff'
 import type { DashboardFilters } from '../lib/dashboard'
 
 // ─── Utilidades ─────────────────────────────────────────────────────────────
@@ -212,6 +213,108 @@ function relativeTime(iso: string): string {
   return `hace ${Math.floor(diff / 86400)}d`
 }
 
+// ─── Widget de handoff pendiente (polling 30 s) ───────────────────────────────
+
+function PendingHandoffWidget() {
+  const { data, isLoading, isError, dataUpdatedAt } = usePendingHandoff()
+
+  const lastUpdatedLabel = dataUpdatedAt
+    ? relativeTime(new Date(dataUpdatedAt).toISOString())
+    : null
+
+  const count = data?.count ?? 0
+
+  return (
+    <section className={`rounded-xl border shadow-sm overflow-hidden ${
+      isError    ? 'bg-white border-gray-100' :
+      count > 0  ? 'bg-amber-50 border-amber-200' :
+                   'bg-white border-gray-100'
+    }`}>
+      {/* Cabecera */}
+      <div className="px-5 py-4 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-lg">{count > 0 ? '🙋' : '✅'}</span>
+          <h2 className="text-sm font-semibold text-gray-700">Intervención humana pendiente</h2>
+          {count > 0 && (
+            <span className="bg-amber-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">
+              {count}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          {lastUpdatedLabel && (
+            <span className="text-xs text-gray-400">act. {lastUpdatedLabel}</span>
+          )}
+          {count > 0 && (
+            <Link
+              to="/inbox?status=waiting_human"
+              className="text-xs font-semibold text-amber-700 hover:underline"
+            >
+              Ver todas →
+            </Link>
+          )}
+        </div>
+      </div>
+
+      {/* Cuerpo */}
+      {isLoading ? (
+        <div className="px-5 pb-4"><Spinner /></div>
+      ) : isError ? (
+        <p className="px-5 pb-4 text-xs text-red-500">
+          No se pudo cargar el estado de handoffs. Reintentando automáticamente.
+        </p>
+      ) : count === 0 ? (
+        <p className="px-5 pb-4 text-sm text-green-700 font-medium">
+          Sin conversaciones pendientes. La IA está gestionando todo.
+        </p>
+      ) : (
+        <div className="divide-y divide-amber-100">
+          {data!.items.map(item => (
+            <div
+              key={item.conversationId}
+              className="px-5 py-3 flex items-center justify-between gap-3 hover:bg-amber-100/40 transition-colors"
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-medium text-sm text-gray-900 truncate">
+                    {item.patientName}
+                  </span>
+                  <span className="text-xs text-gray-500">{item.patientPhone}</span>
+                  <span className="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-mono">
+                    {item.flowId}
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 shrink-0">
+                <span className={`text-xs font-semibold ${item.waitingMinutes > 60 ? 'text-red-600' : 'text-amber-700'}`}>
+                  {item.waitingMinutes < 60
+                    ? `${item.waitingMinutes}m`
+                    : `${Math.floor(item.waitingMinutes / 60)}h ${item.waitingMinutes % 60}m`}
+                  {' '}esperando
+                </span>
+                <Link
+                  to={`/inbox?conversation=${item.conversationId}`}
+                  className="text-xs bg-amber-500 hover:bg-amber-600 text-white px-3 py-1.5 rounded-lg font-semibold transition-colors"
+                >
+                  Atender
+                </Link>
+              </div>
+            </div>
+          ))}
+          {data!.count > data!.items.length && (
+            <div className="px-5 py-3 text-xs text-gray-500 text-center">
+              y {data!.count - data!.items.length} más ·{' '}
+              <Link to="/inbox?status=waiting_human" className="underline text-amber-700">
+                Ver todas
+              </Link>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
 // ─── Componente principal ─────────────────────────────────────────────────────
 
 export default function DashboardPage() {
@@ -381,6 +484,9 @@ export default function DashboardPage() {
             )}
           </div>
         )}
+
+        {/* ── Widget handoff pendiente (polling 30 s) ───────────────────────── */}
+        <PendingHandoffWidget />
 
         {/* ── KPI Cards ─────────────────────────────────────────────────────── */}
         {summary.isLoading ? (
