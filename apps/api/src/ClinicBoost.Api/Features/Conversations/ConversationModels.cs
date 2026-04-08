@@ -136,3 +136,33 @@ public sealed record PatchConversationStatusResponse
     public string PreviousStatus { get; init; } = "";
     public DateTimeOffset UpdatedAt { get; init; }
 }
+
+// ── Pending handoff (widget de polling del dashboard) ─────────────────────────
+
+/// <summary>
+/// GET /api/conversations/pending-handoff
+/// Resumen ligero de conversaciones en estado waiting_human.
+/// Diseñado para polling corto (30 s) desde el dashboard.
+/// </summary>
+public sealed record PendingHandoffResponse
+{
+    /// <summary>Total de conversaciones actualmente en waiting_human.</summary>
+    public int Count { get; init; }
+
+    /// <summary>Las 10 más antiguas (mayor urgencia primero).</summary>
+    public IReadOnlyList<PendingHandoffItem> Items { get; init; } = [];
+}
+
+/// <summary>Fila resumen para el widget de intervención humana del dashboard.</summary>
+public sealed record PendingHandoffItem
+{
+    public Guid   ConversationId { get; init; }
+    public string PatientName    { get; init; } = "";
+    public string PatientPhone   { get; init; } = "";
+    public string FlowId         { get; init; } = "";
+
+    /// <summary>Minutos desde el último cambio de estado (aproximación de tiempo de espera).</summary>
+    public int WaitingMinutes { get; init; }
+
+    public DateTimeOffset UpdatedAt { get; init; }
+}

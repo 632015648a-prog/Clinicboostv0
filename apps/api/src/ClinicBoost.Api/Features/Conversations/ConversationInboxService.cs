@@ -154,7 +154,7 @@ public sealed class ConversationInboxService : IConversationInboxService
             // Filtro de búsqueda libre
             if (!string.IsNullOrEmpty(search))
             {
-                var name  = patient?.Name?.ToLowerInvariant() ?? "";
+                var name  = patient?.FullName?.ToLowerInvariant() ?? "";
                 var phone = patient?.Phone?.ToLowerInvariant() ?? "";
                 if (!name.Contains(search) && !phone.Contains(search))
                     continue;
@@ -324,5 +324,53 @@ public sealed class ConversationInboxService : IConversationInboxService
             PreviousStatus = previousStatus,
             UpdatedAt      = conv.UpdatedAt,
         };
+    }
+
+    // ── GET /api/conversations/pending-handoff ────────────────────────────
+
+    public async Task<PendingHandoffResponse> GetPendingHandoffAsync(
+        Guid              tenantId,
+        CancellationToken ct = default)
+    {
+        var query = _db.Conversations
+            .AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.Status == "waiting_human");
+
+        var count = await query.CountAsync(ct);
+
+        if (count == 0)
+            return new PendingHandoffResponse { Count = 0, Items = [] };
+
+        // Cargar las 10 más antiguas (más urgentes primero)
+        var conversations = await query
+            .OrderBy(c => c.UpdatedAt)
+            .Take(10)
+            .Select(c => new { c.Id, c.PatientId, c.FlowId, c.UpdatedAt })
+            .ToListAsync(ct);
+
+        // Cargar pacientes en un solo query
+        var patientIds = conversations.Select(c => c.PatientId).Distinct().ToList();
+        var patients = await _db.Patients
+            .AsNoTracking()
+            .Where(p => p.TenantId == tenantId && patientIds.Contains(p.Id))
+            .Select(p => new { p.Id, p.FullName, p.Phone })
+            .ToDictionaryAsync(p => p.Id, ct);
+
+        var now   = DateTimeOffset.UtcNow;
+        var items = conversations.Select(c =>
+        {
+            patients.TryGetValue(c.PatientId, out var patient);
+            return new PendingHandoffItem
+            {
+                ConversationId = c.Id,
+                PatientName    = patient?.FullName ?? "(desconocido)",
+                PatientPhone   = patient?.Phone    ?? "",
+                FlowId         = c.FlowId          ?? "",
+                WaitingMinutes = (int)(now - c.UpdatedAt).TotalMinutes,
+                UpdatedAt      = c.UpdatedAt,
+            };
+        }).ToList();
+
+        return new PendingHandoffResponse { Count = count, Items = items };
     }
 }

@@ -37,4 +37,13 @@ public interface IConversationInboxService
         Guid                           conversationId,
         PatchConversationStatusRequest request,
         CancellationToken              ct = default);
+
+    /// <summary>
+    /// Resumen ligero de conversaciones en estado waiting_human.
+    /// Devuelve el total y las 10 más antiguas (mayor urgencia primero).
+    /// Diseñado para polling corto (~30 s) desde el widget del dashboard.
+    /// </summary>
+    Task<PendingHandoffResponse> GetPendingHandoffAsync(
+        Guid              tenantId,
+        CancellationToken ct = default);
 }

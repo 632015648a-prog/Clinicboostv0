@@ -38,6 +38,10 @@ public static class ConversationEndpoints
         group.MapGet("/{id:guid}/messages", GetConversationDetailAsync)
             .WithSummary("Detalle de una conversación con historial de mensajes.");
 
+        // GET /api/conversations/pending-handoff
+        group.MapGet("/pending-handoff", GetPendingHandoffAsync)
+            .WithSummary("Resumen de conversaciones en waiting_human para el widget de polling del dashboard.");
+
         // PATCH /api/conversations/{id}/status
         group.MapPatch("/{id:guid}/status", PatchStatusAsync)
             .WithSummary("Cambia el estado de una conversación (waiting_human / open / resolved).");
@@ -102,6 +106,18 @@ public static class ConversationEndpoints
             return Results.NotFound(new { error = $"Conversación {id} no encontrada." });
         }
 
+        return Results.Ok(result);
+    }
+
+    // ── GET /api/conversations/pending-handoff ────────────────────────────
+
+    private static async Task<IResult> GetPendingHandoffAsync(
+        IConversationInboxService service,
+        ITenantContext             tenantCtx,
+        CancellationToken         ct)
+    {
+        var tenantId = tenantCtx.RequireTenantId();
+        var result   = await service.GetPendingHandoffAsync(tenantId, ct);
         return Results.Ok(result);
     }
 }
