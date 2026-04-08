@@ -1,0 +1,17 @@
+{
+  "_readme": "Copia este archivo a appsettings.Development.Local.json y rellena los valores reales. NUNCA subas el .json sin .example a git (ya está en .gitignore).",
+
+  "Twilio": {
+    "AccountSid": "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "AuthToken": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "WebhookBaseUrl": "https://tu-subdominio.trycloudflare.com"
+  },
+
+  "OpenAI": {
+    "ApiKey": "sk-proj-..."
+  },
+
+  "Anthropic": {
+    "ApiKey": "sk-ant-..."
+  }
+}
