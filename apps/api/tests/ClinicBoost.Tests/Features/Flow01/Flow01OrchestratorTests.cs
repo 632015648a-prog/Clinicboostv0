@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using ClinicBoost.Api.Features.Flow01;
+using ClinicBoost.Api.Features.Variants;
 using ClinicBoost.Api.Infrastructure.Database;
 using ClinicBoost.Api.Infrastructure.Idempotency;
 using ClinicBoost.Domain.Patients;
@@ -32,6 +33,7 @@ public sealed class Flow01OrchestratorTests : IDisposable
     private readonly IOutboundMessageSender  _sender;
     private readonly IFlowMetricsService     _metrics;
     private readonly IIdempotencyService     _idempotency;
+    private readonly IVariantTrackingService _variantTracking;
     private readonly Guid                    _tenantId;
 
     public Flow01OrchestratorTests()
@@ -42,11 +44,12 @@ public sealed class Flow01OrchestratorTests : IDisposable
                 Microsoft.EntityFrameworkCore.Diagnostics.InMemoryEventId.TransactionIgnoredWarning))
             .Options;
 
-        _db          = new AppDbContext(opts);
-        _sender      = Substitute.For<IOutboundMessageSender>();
-        _metrics     = Substitute.For<IFlowMetricsService>();
-        _idempotency = Substitute.For<IIdempotencyService>();
-        _tenantId    = Guid.NewGuid();
+        _db              = new AppDbContext(opts);
+        _sender          = Substitute.For<IOutboundMessageSender>();
+        _metrics         = Substitute.For<IFlowMetricsService>();
+        _idempotency     = Substitute.For<IIdempotencyService>();
+        _variantTracking = Substitute.For<IVariantTrackingService>();
+        _tenantId        = Guid.NewGuid();
 
         // Por defecto: idempotency permite el procesamiento (intercepta ambas sobrecargas)
         _idempotency
@@ -68,6 +71,7 @@ public sealed class Flow01OrchestratorTests : IDisposable
             _sender,
             _metrics,
             _idempotency,
+            _variantTracking,
             Options.Create(opts ?? new Flow01Options { DefaultTemplateSid = "HXtest_template" }),
             NullLogger<Flow01Orchestrator>.Instance);
 

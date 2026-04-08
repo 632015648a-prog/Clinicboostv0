@@ -179,7 +179,7 @@ public class VariantStatsEndpointsTests : IAsyncLifetime
             FlowId     = "flow_01",
             TemplateId = "HXabc",
             VariantKey = "control",
-            WeightPct  = pct,
+            WeightPct  = (short)pct,
         });
 
         Assert.Equal(400, GetStatusCode(result));

@@ -1,6 +1,7 @@
 using ClinicBoost.Api.Features.Variants;
 using ClinicBoost.Api.Features.Webhooks.WhatsApp.Status;
 using ClinicBoost.Api.Infrastructure.Database;
+using ClinicBoost.Api.Infrastructure.Idempotency;
 using ClinicBoost.Domain.Conversations;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
@@ -38,7 +39,15 @@ public sealed class MessageStatusServiceTests
     private static MessageStatusService BuildSut(AppDbContext db)
     {
         var variantTracking = Substitute.For<IVariantTrackingService>();
-        return new MessageStatusService(db, variantTracking, NullLogger<MessageStatusService>.Instance);
+        // GAP-04 / SEC-02: idempotency mock permite procesamiento por defecto (NewEvent).
+        // Para tests de re-entrega, usar BuildSutWithDuplicateIdempotency.
+        var idempotency = Substitute.For<IIdempotencyService>();
+        idempotency
+            .TryProcessAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<Guid?>(),
+                Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(IdempotencyResult.NewEvent(Guid.NewGuid(), DateTimeOffset.UtcNow));
+        return new MessageStatusService(
+            db, variantTracking, idempotency, NullLogger<MessageStatusService>.Instance);
     }
 
     /// <summary>Crea y persiste un Message de prueba con status "sent".</summary>
@@ -410,5 +419,46 @@ public sealed class MessageStatusServiceTests
         msg.SentAt.Should().NotBeNull();
         msg.DeliveredAt.Should().NotBeNull();
         msg.ReadAt.Should().NotBeNull();
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // GRUPO 7: Idempotencia (GAP-04 / SEC-02)
+    // ════════════════════════════════════════════════════════════════════════
+
+    [Fact(DisplayName = "GAP-04: re-entrega del mismo webhook no inserta segundo DeliveryEvent")]
+    public async Task ProcessAsync_DuplicateWebhook_BlockedByIdempotency()
+    {
+        using var db     = CreateDb();
+        var       tenant = Guid.NewGuid();
+        var       sid    = "SMdup_idemp_001";
+
+        // SUT con idempotency que retorna Duplicate en la segunda llamada
+        var variantTracking = Substitute.For<IVariantTrackingService>();
+        var idempotency     = Substitute.For<IIdempotencyService>();
+        idempotency
+            .TryProcessAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<Guid?>(),
+                Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(
+                IdempotencyResult.NewEvent(Guid.NewGuid(), DateTimeOffset.UtcNow),
+                IdempotencyResult.Duplicate(Guid.NewGuid(), DateTimeOffset.UtcNow.AddSeconds(-1)));
+
+        var sut = new MessageStatusService(
+            db, variantTracking, idempotency, NullLogger<MessageStatusService>.Instance);
+
+        await SeedMessageAsync(db, tenant, sid, "sent");
+
+        // Primera entrega
+        await sut.ProcessAsync(tenant, BuildRequest(sid, "delivered"));
+        // Re-entrega (Twilio re-delivers)
+        await sut.ProcessAsync(tenant, BuildRequest(sid, "delivered"));
+
+        // Solo debe existir UN evento de entregabilidad
+        var events = await db.MessageDeliveryEvents
+            .Where(e => e.ProviderMessageId == sid)
+            .ToListAsync();
+
+        events.Should().HaveCount(1,
+            "GAP-04: la re-entrega de Twilio debe ser ignorada por el guard de idempotencia; " +
+            "solo se inserta un MessageDeliveryEvent por (MessageSid, MessageStatus)");
     }
 }

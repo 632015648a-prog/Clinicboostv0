@@ -153,9 +153,7 @@ public sealed class TC02_PatientReplyAiResponseTests : SmokeTestDb
 
         // 3. El agente tomó una acción válida (no fallo silencioso)
         result.Action.Should().BeOneOf(
-            AgentAction.SendMessage,
-            AgentAction.ProposeAppointment,
-            AgentAction.EscalateToHuman,   // aceptable si decide escalar
+            [AgentAction.SendMessage, AgentAction.ProposeAppointment, AgentAction.EscalateToHuman],
             "el agente debe generar una acción explícita, nunca null");
 
         // 4. Hay texto de respuesta si la acción es SendMessage

@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using ClinicBoost.Api.Infrastructure.Database;
 using ClinicBoost.Api.Infrastructure.Idempotency;
+using ClinicBoost.Domain.Appointments;
 using ClinicBoost.Domain.Automation;
 using ClinicBoost.Domain.Conversations;
 using ClinicBoost.Domain.Patients;
@@ -186,6 +187,37 @@ public static class SmokeFixtures
         db.RuleConfigs.Add(rule);
         await db.SaveChangesAsync();
         return rule;
+    }
+
+    // ── Cita (Appointment) ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Crea y persiste una cita programada para un paciente.
+    /// StartsAtUtc por defecto = ahora + 24 h (recién en ventana de recordatorio).
+    /// </summary>
+    public static async Task<Appointment> SeedAppointmentAsync(
+        AppDbContext      db,
+        Guid              tenantId,
+        Guid              patientId,
+        DateTimeOffset?   startsAtUtc    = null,
+        AppointmentStatus status         = AppointmentStatus.Scheduled,
+        DateTimeOffset?   reminderSentAt = null,
+        string            therapistName  = "Dr. Ramírez")
+    {
+        var start = startsAtUtc ?? DateTimeOffset.UtcNow.AddHours(24);
+        var apt = new Appointment
+        {
+            TenantId       = tenantId,
+            PatientId      = patientId,
+            TherapistName  = therapistName,
+            StartsAtUtc    = start,
+            EndsAtUtc      = start.AddHours(1),
+            Status         = status,
+            ReminderSentAt = reminderSentAt,
+        };
+        db.Appointments.Add(apt);
+        await db.SaveChangesAsync();
+        return apt;
     }
 
     // ── Helpers de idempotencia ───────────────────────────────────────────────
