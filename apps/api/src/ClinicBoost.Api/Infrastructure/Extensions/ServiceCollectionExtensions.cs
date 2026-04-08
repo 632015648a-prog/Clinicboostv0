@@ -15,6 +15,7 @@ using ClinicBoost.Api.Features.Agent;
 using ClinicBoost.Api.Features.Appointments;
 using ClinicBoost.Api.Features.Calendar;
 using ClinicBoost.Api.Features.Flow01;
+using ClinicBoost.Api.Features.Flow03;
 using ClinicBoost.Api.Features.Audit;
 using ClinicBoost.Api.Features.Variants;
 using ClinicBoost.Api.Features.Dashboard;
@@ -313,6 +314,25 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
+    // Flow03: recordatorio de cita → WA reminder → conversación operativa
+    public static IServiceCollection AddFlow03Feature(
+        this IServiceCollection services,
+        IConfiguration          config)
+    {
+        // Opciones de configuración
+        services
+            .AddOptions<Flow03Options>()
+            .Bind(config.GetSection(Flow03Options.SectionName));
+
+        // Orquestador del flujo (Scoped: depende de AppDbContext y servicios Scoped)
+        services.AddScoped<Flow03Orchestrator>();
+
+        // Worker de polling (IOptions<Flow03Options> inyectado como singleton por .NET)
+        services.AddHostedService<AppointmentReminderWorker>();
+
+        return services;
+    }
+
     // Capa iCal read-only: caché persistida, freshness y fallback
     public static IServiceCollection AddCalendarFeature(
         this IServiceCollection services,
@@ -380,6 +400,7 @@ public static class ServiceCollectionExtensions
         services.AddCalendarFeature(config);
         services.AddAppointmentsFeature();
         services.AddFlow01Feature(config);
+        services.AddFlow03Feature(config);
         services.AddAuditSecurityFeature(config);
         services.AddVariantTrackingFeature();
         services.AddDashboardFeature();

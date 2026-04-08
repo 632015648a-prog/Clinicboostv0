@@ -14,6 +14,15 @@ try
 {
     var builder = WebApplication.CreateBuilder(args);
 
+    // ─── Secrets locales (gitignored) ────────────────────────────────────────
+    // appsettings.Development.Local.json sobreescribe Development para Twilio / AI keys.
+    // Ver appsettings.Development.Local.json.example para la plantilla.
+    if (builder.Environment.IsDevelopment())
+    {
+        builder.Configuration.AddJsonFile(
+            "appsettings.Development.Local.json", optional: true, reloadOnChange: false);
+    }
+
     // ─── Serilog ─────────────────────────────────────────────────────────────
     builder.Host.UseSerilog((ctx, services, cfg) => cfg
         .ReadFrom.Configuration(ctx.Configuration)
@@ -100,7 +109,7 @@ try
         app.MapOpenApi();
         // EndpointPathPrefix fue eliminado en Scalar.AspNetCore v2.x.
         // El prefijo de ruta se pasa como parámetro endpointPrefix directamente.
-        app.MapScalarApiReference(endpointPrefix: "/scalar", options: opts =>
+        app.MapScalarApiReference(endpointPrefix: "/scalar", configureOptions: opts =>
         {
             opts.Title = "ClinicBoost API [STAGING]";
             opts.Theme = Scalar.AspNetCore.ScalarTheme.Purple;
