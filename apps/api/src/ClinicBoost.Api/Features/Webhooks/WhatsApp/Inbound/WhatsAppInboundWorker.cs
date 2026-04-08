@@ -214,7 +214,8 @@ public sealed class WhatsAppInboundWorker : BackgroundService
                     lastOutboundWithVariant.Id, conversation.Id);
             }
 
-            // ── 6. Verificar consentimiento RGPD ──────────────────────────────            if (!patient.RgpdConsent)
+            // ── 6. Verificar consentimiento RGPD ──────────────────────────────
+            if (!patient.RgpdConsent)
             {
                 _logger.LogInformation(
                     "[WAWorker] Paciente sin consentimiento RGPD. " +

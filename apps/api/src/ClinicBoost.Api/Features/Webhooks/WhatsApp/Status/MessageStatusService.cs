@@ -92,12 +92,10 @@ public sealed class MessageStatusService : IMessageStatusService
         var now = DateTimeOffset.UtcNow;
 
         // ── 0. Idempotencia: evitar procesamiento duplicado de re-entregas ────
-        // Clave única por (MessageSid, MessageStatus, tenantId):
-        //   un webhook "sent" para el mismo SID siempre produce los mismos efectos,
-        //   por lo que re-entregarlo es seguro de ignorar.
+        //   "twilio.status_webhook" + MessageSid + "_" + MessageStatus → clave exacta GAP-04 (SEC-02).
         var idempKey = $"{request.MessageSid}_{request.MessageStatus}";
         var idempResult = await _idempotency.TryProcessAsync(
-            eventType: "twilio.message_status",
+            eventType: "twilio.status_webhook",
             eventId:   idempKey,
             tenantId:  tenantId,
             ct:        ct);
