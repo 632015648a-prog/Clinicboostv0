@@ -46,4 +46,16 @@ public interface IConversationInboxService
     Task<PendingHandoffResponse> GetPendingHandoffAsync(
         Guid              tenantId,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Envía un mensaje de texto libre desde el operador humano.
+    /// Persiste el mensaje, lo envía vía Twilio y devuelve el resultado.
+    /// Devuelve null si la conversación no pertenece al tenant (404 en endpoint).
+    /// Lanza <see cref="ManualSendException"/> para errores de negocio (422/502).
+    /// </summary>
+    Task<SendManualMessageResponse?> SendManualMessageAsync(
+        Guid                      tenantId,
+        Guid                      conversationId,
+        SendManualMessageRequest  request,
+        CancellationToken         ct = default);
 }

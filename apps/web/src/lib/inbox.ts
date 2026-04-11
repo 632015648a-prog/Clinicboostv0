@@ -95,6 +95,23 @@ export interface InboxFilters {
   pageSize?:      number
 }
 
+// ── Envío manual de mensaje por operador ──────────────────────────────────
+
+/** Body de POST /api/conversations/{id}/messages */
+export interface SendManualMessageRequest {
+  body: string
+}
+
+/** Respuesta de POST /api/conversations/{id}/messages */
+export interface SendManualMessageResponse {
+  messageId:  string
+  direction:  'outbound'
+  body:       string
+  status:     string       // sent | failed
+  twilioSid:  string | null
+  createdAt:  string       // ISO 8601
+}
+
 // ── Pending handoff (widget de polling del dashboard) ─────────────────────
 
 /** Fila del widget "intervención humana pendiente" en el dashboard. */

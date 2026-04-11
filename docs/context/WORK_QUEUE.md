@@ -8,7 +8,7 @@ Ordenar siempre por impacto en piloto, no por apetito técnico.
 ### WQ-001 — Envío manual desde Inbox
 - Prioridad: Alta
 - Bloquea piloto: Sí
-- Estado: Pendiente de spec
+- Estado: **✅ Completado** (2026-04-11, commit TASK-001)
 
 ### WQ-002 — Persistencia de Note en conversación
 - Prioridad: Alta
@@ -33,7 +33,7 @@ Ordenar siempre por impacto en piloto, no por apetito técnico.
 ### WQ-006 — Tests mínimos de Conversations/Inbox
 - Prioridad: Media
 - Bloquea piloto: No, pero reduce riesgo
-- Estado: Pendiente
+- Estado: **Parcialmente completado** — 7 tests de SendManualMessage añadidos (2026-04-11)
 
 ### WQ-007 — Definir siguiente flow a construir tras piloto base
 - Prioridad: Media

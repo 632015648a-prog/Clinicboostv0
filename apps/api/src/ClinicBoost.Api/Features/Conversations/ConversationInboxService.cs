@@ -1,3 +1,4 @@
+using ClinicBoost.Api.Features.Flow01;
 using ClinicBoost.Api.Infrastructure.Database;
 using ClinicBoost.Domain.Conversations;
 using Microsoft.EntityFrameworkCore;
@@ -27,6 +28,11 @@ namespace ClinicBoost.Api.Features.Conversations;
 
 public sealed class ConversationInboxService : IConversationInboxService
 {
+    // Estados desde los que el operador puede enviar mensajes manuales.
+    // "resolved", "expired" y "opted_out" bloquean el envío.
+    private static readonly HashSet<string> SendableStatuses =
+        new(StringComparer.OrdinalIgnoreCase) { "open", "waiting_human" };
+
     private static readonly HashSet<string> AllowedPatchStatuses =
         new(StringComparer.OrdinalIgnoreCase)
         {
@@ -36,13 +42,16 @@ public sealed class ConversationInboxService : IConversationInboxService
         };
 
     private readonly AppDbContext                         _db;
+    private readonly IOutboundMessageSender               _sender;
     private readonly ILogger<ConversationInboxService>   _logger;
 
     public ConversationInboxService(
         AppDbContext                       db,
+        IOutboundMessageSender             sender,
         ILogger<ConversationInboxService>  logger)
     {
         _db     = db;
+        _sender = sender;
         _logger = logger;
     }
 
@@ -372,5 +381,123 @@ public sealed class ConversationInboxService : IConversationInboxService
         }).ToList();
 
         return new PendingHandoffResponse { Count = count, Items = items };
+    }
+
+    // ── POST /api/conversations/{id}/messages ─────────────────────────────
+
+    public async Task<SendManualMessageResponse?> SendManualMessageAsync(
+        Guid                      tenantId,
+        Guid                      conversationId,
+        SendManualMessageRequest  request,
+        CancellationToken         ct = default)
+    {
+        // ── 1. Cargar conversación con tracking (para UpdatedAt) ──────────
+        var conv = await _db.Conversations
+            .Where(c => c.TenantId == tenantId && c.Id == conversationId)
+            .FirstOrDefaultAsync(ct);
+
+        if (conv is null)
+        {
+            _logger.LogWarning(
+                "[InboxService.Send] ConversationId={Id} no encontrada para TenantId={TenantId}",
+                conversationId, tenantId);
+            return null;   // → 404 en endpoint
+        }
+
+        // ── 2. Validar que el estado permite envío manual ─────────────────
+        if (!SendableStatuses.Contains(conv.Status))
+        {
+            _logger.LogWarning(
+                "[InboxService.Send] Estado '{Status}' no permite envío manual. ConvId={Id}",
+                conv.Status, conversationId);
+            throw new ManualSendException(422,
+                $"No se puede enviar un mensaje en una conversación con estado '{conv.Status}'. " +
+                "Debe estar en 'open' o 'waiting_human'.");
+        }
+
+        // ── 3. Cargar tenant para obtener número de WhatsApp ──────────────
+        var tenant = await _db.Tenants.FindAsync([tenantId], ct);
+
+        if (tenant is null || string.IsNullOrWhiteSpace(tenant.WhatsAppNumber))
+        {
+            _logger.LogWarning(
+                "[InboxService.Send] TenantId={TenantId} no tiene WhatsAppNumber configurado.",
+                tenantId);
+            throw new ManualSendException(422,
+                "El número de WhatsApp de la clínica no está configurado. " +
+                "Configura el número antes de enviar mensajes desde la Inbox.");
+        }
+
+        // ── 4. Obtener teléfono del paciente ──────────────────────────────
+        var patient = await _db.Patients
+            .AsNoTracking()
+            .Where(p => p.TenantId == tenantId && p.Id == conv.PatientId)
+            .Select(p => new { p.Id, p.Phone })
+            .FirstOrDefaultAsync(ct);
+
+        if (patient is null || string.IsNullOrWhiteSpace(patient.Phone))
+        {
+            _logger.LogWarning(
+                "[InboxService.Send] Paciente sin teléfono. PatientId={PatientId} ConvId={Id}",
+                conv.PatientId, conversationId);
+            throw new ManualSendException(422,
+                "No se encontró el teléfono del paciente asociado a esta conversación.");
+        }
+
+        // ── 5. Enviar vía IOutboundMessageSender ──────────────────────────
+        // El sender crea el Message en BD (status=pending) y actualiza a sent/failed.
+        // Trazabilidad: GeneratedByAi=false, AiModel="operator" (campo reutilizado).
+        var sendReq = new OutboundMessageRequest
+        {
+            ToPhone        = $"whatsapp:{patient.Phone}",
+            FromPhone      = $"whatsapp:{tenant.WhatsAppNumber}",
+            Channel        = "whatsapp",
+            Body           = request.Body,
+            FlowId         = conv.FlowId ?? "flow_00",
+            TenantId       = tenantId,
+            PatientId      = conv.PatientId,
+            ConversationId = conversationId,
+            CorrelationId  = Guid.NewGuid().ToString(),
+        };
+
+        var result = await _sender.SendAsync(sendReq, ct);
+
+        // ── 6. Marcar AiModel="operator" para trazabilidad ────────────────
+        // El sender ya creó el Message; lo actualizamos con tracking si está pendiente.
+        if (result.MessageId != Guid.Empty)
+        {
+            var msg = await _db.Messages.FindAsync([result.MessageId], ct);
+            if (msg is not null && msg.AiModel is null)
+            {
+                msg.AiModel = "operator";
+                await _db.SaveChangesAsync(ct);
+            }
+        }
+
+        // ── 7. Si Twilio falló, propagar error visible al operador ────────
+        if (!result.IsSuccess)
+        {
+            _logger.LogWarning(
+                "[InboxService.Send] Twilio falló. Code={Code} Error={Error} ConvId={Id}",
+                result.ErrorCode, result.ErrorMessage, conversationId);
+            throw new ManualSendException(502,
+                $"Error al enviar el mensaje: {result.ErrorMessage ?? result.ErrorCode ?? "error desconocido"}. " +
+                "El mensaje quedó registrado como fallido.");
+        }
+
+        _logger.LogInformation(
+            "[InboxService.Send] Mensaje manual enviado. " +
+            "MsgId={MsgId} TwilioSid={Sid} ConvId={ConvId} TenantId={TenantId}",
+            result.MessageId, result.TwilioSid, conversationId, tenantId);
+
+        return new SendManualMessageResponse
+        {
+            MessageId  = result.MessageId,
+            Direction  = "outbound",
+            Body       = request.Body,
+            Status     = result.Status,
+            TwilioSid  = result.TwilioSid,
+            CreatedAt  = DateTimeOffset.UtcNow,
+        };
     }
 }

@@ -21,6 +21,7 @@ import {
   useInboxList,
   useConversationDetail,
   usePatchConversationStatus,
+  useSendManualMessage,
 } from '../lib/useInbox'
 import type { InboxFilters, ConversationStatus, PatchableStatus } from '../lib/inbox'
 
@@ -105,6 +106,119 @@ function Spinner() {
   return (
     <div className="flex items-center justify-center py-10">
       <div className="h-7 w-7 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent" />
+    </div>
+  )
+}
+
+// ─── Panel de envío de mensaje manual ────────────────────────────────────────
+
+const MAX_BODY_LENGTH = 1600
+
+interface SendMessagePanelProps {
+  conversationId: string
+  currentStatus:  string
+}
+
+function SendMessagePanel({ conversationId, currentStatus }: SendMessagePanelProps) {
+  const send        = useSendManualMessage()
+  const [text, setText]   = useState('')
+  const [err,  setErr]    = useState<string | null>(null)
+
+  // Solo visible en estados que permiten envío
+  const canSend = currentStatus === 'open' || currentStatus === 'waiting_human'
+  if (!canSend) return null
+
+  const charsLeft  = MAX_BODY_LENGTH - text.length
+  const isOverflow = charsLeft < 0
+  const isEmpty    = text.trim().length === 0
+
+  async function handleSend() {
+    setErr(null)
+
+    if (isEmpty) {
+      setErr('El mensaje no puede estar vacío.')
+      return
+    }
+    if (isOverflow) {
+      setErr(`El mensaje supera el límite de ${MAX_BODY_LENGTH} caracteres.`)
+      return
+    }
+
+    try {
+      await send.mutateAsync({ conversationId, body: { body: text.trim() } })
+      setText('')   // limpiar tras envío exitoso
+    } catch (e: unknown) {
+      // Intentar extraer el mensaje de error del servidor
+      const axiosErr = e as { response?: { data?: { error?: string; detail?: string } } }
+      const serverMsg =
+        axiosErr?.response?.data?.error ??
+        axiosErr?.response?.data?.detail ??
+        'No se pudo enviar el mensaje. Inténtalo de nuevo.'
+      setErr(serverMsg)
+    }
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    // Ctrl+Enter o Cmd+Enter para enviar
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault()
+      handleSend()
+    }
+  }
+
+  const isLoading = send.isPending
+
+  return (
+    <div className="border-t border-gray-200 bg-white px-4 py-3 space-y-2">
+      <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+        Responder como operador
+      </p>
+
+      {err && (
+        <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">
+          {err}
+        </div>
+      )}
+
+      <div className="relative">
+        <textarea
+          placeholder="Escribe un mensaje... (Ctrl+Enter para enviar)"
+          value={text}
+          onChange={e => { setText(e.target.value); setErr(null) }}
+          onKeyDown={handleKeyDown}
+          rows={3}
+          disabled={isLoading}
+          className={`w-full rounded-lg border px-3 py-2 text-sm text-gray-800
+                      focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none
+                      disabled:bg-gray-50 disabled:cursor-not-allowed
+                      ${isOverflow ? 'border-red-400' : 'border-gray-200'}`}
+        />
+        <span className={`absolute bottom-2 right-3 text-[10px]
+          ${isOverflow ? 'text-red-500 font-semibold' : 'text-gray-400'}`}>
+          {charsLeft}
+        </span>
+      </div>
+
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[10px] text-gray-400">
+          {currentStatus === 'waiting_human'
+            ? '🙋 La IA permanecerá pausada tras el envío.'
+            : '✉️ El mensaje se enviará por WhatsApp.'}
+        </p>
+        <button
+          onClick={handleSend}
+          disabled={isLoading || isEmpty || isOverflow}
+          className="rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white
+                     text-xs font-semibold px-4 py-2 transition-colors
+                     disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+        >
+          {isLoading && (
+            <span className="h-3 w-3 animate-spin rounded-full border-2
+                             border-white border-t-transparent" />
+          )}
+          Enviar
+        </button>
+      </div>
     </div>
   )
 }
@@ -337,6 +451,12 @@ function DetailPanel({ conversationId, onBack }: DetailPanelProps) {
           )
         })}
       </div>
+
+      {/* Panel de envío manual */}
+      <SendMessagePanel
+        conversationId={conversationId}
+        currentStatus={currentStatus}
+      />
 
       {/* Panel de acciones */}
       <ActionPanel

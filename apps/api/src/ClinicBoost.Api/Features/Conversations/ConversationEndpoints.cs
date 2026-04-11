@@ -46,6 +46,10 @@ public static class ConversationEndpoints
         group.MapPatch("/{id:guid}/status", PatchStatusAsync)
             .WithSummary("Cambia el estado de una conversación (waiting_human / open / resolved).");
 
+        // POST /api/conversations/{id}/messages
+        group.MapPost("/{id:guid}/messages", SendManualMessageAsync)
+            .WithSummary("Envía un mensaje de texto libre desde el operador humano.");
+
         return app;
     }
 
@@ -119,5 +123,49 @@ public static class ConversationEndpoints
         var tenantId = tenantCtx.RequireTenantId();
         var result   = await service.GetPendingHandoffAsync(tenantId, ct);
         return Results.Ok(result);
+    }
+
+    // ── POST /api/conversations/{id}/messages ─────────────────────────────
+
+    private static async Task<IResult> SendManualMessageAsync(
+        Guid                          id,
+        [FromBody] SendManualMessageRequest request,
+        IConversationInboxService     service,
+        ITenantContext                 tenantCtx,
+        CancellationToken             ct)
+    {
+        // Validaciones de request
+        if (string.IsNullOrWhiteSpace(request.Body))
+            return Results.BadRequest(new { error = "El campo 'body' es obligatorio y no puede estar vacío." });
+
+        if (request.Body.Length > 1600)
+            return Results.BadRequest(new { error = "El mensaje no puede superar los 1600 caracteres." });
+
+        var tenantId = tenantCtx.RequireTenantId();
+
+        try
+        {
+            var result = await service.SendManualMessageAsync(tenantId, id, request, ct);
+
+            if (result is null)
+                return Results.NotFound(new { error = $"Conversación {id} no encontrada." });
+
+            return Results.Ok(result);
+        }
+        catch (ManualSendException ex)
+        {
+            // Errores de negocio legibles: configuración, estado inválido, fallo Twilio
+            return ex.HttpStatusCode switch
+            {
+                422 => Results.UnprocessableEntity(new { error = ex.Message }),
+                502 => Results.Problem(
+                           detail:     ex.Message,
+                           statusCode: 502,
+                           title:      "Error de envío"),
+                _   => Results.Problem(
+                           detail:     ex.Message,
+                           statusCode: ex.HttpStatusCode)
+            };
+        }
     }
 }

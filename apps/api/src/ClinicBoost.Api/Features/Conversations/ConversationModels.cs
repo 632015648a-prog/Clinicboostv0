@@ -137,6 +137,34 @@ public sealed record PatchConversationStatusResponse
     public DateTimeOffset UpdatedAt { get; init; }
 }
 
+// ── Envío manual de mensaje por operador ─────────────────────────────────────
+
+/// <summary>
+/// Body de POST /api/conversations/{id}/messages.
+/// Permite al operador enviar un mensaje de texto libre a través de WhatsApp.
+/// </summary>
+public sealed record SendManualMessageRequest
+{
+    /// <summary>
+    /// Texto del mensaje. No puede estar vacío ni superar 1600 caracteres.
+    /// </summary>
+    public string Body { get; init; } = "";
+}
+
+/// <summary>
+/// Respuesta de POST /api/conversations/{id}/messages.
+/// Devuelve el mensaje persistido y enviado.
+/// </summary>
+public sealed record SendManualMessageResponse
+{
+    public Guid   MessageId  { get; init; }
+    public string Direction  { get; init; } = "outbound";
+    public string Body       { get; init; } = "";
+    public string Status     { get; init; } = "";    // sent | failed
+    public string? TwilioSid { get; init; }
+    public DateTimeOffset CreatedAt { get; init; }
+}
+
 // ── Pending handoff (widget de polling del dashboard) ─────────────────────────
 
 /// <summary>

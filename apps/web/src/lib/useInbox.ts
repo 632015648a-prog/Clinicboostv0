@@ -11,6 +11,8 @@ import type {
   ConversationDetailResponse,
   PatchConversationStatusRequest,
   PatchConversationStatusResponse,
+  SendManualMessageRequest,
+  SendManualMessageResponse,
   InboxFilters,
 } from './inbox'
 
@@ -86,6 +88,34 @@ export function usePatchConversationStatus() {
     onSuccess: (_data, { conversationId }) => {
       // Invalidar lista completa y el detalle específico
       qc.invalidateQueries({ queryKey: inboxKeys.all })
+      qc.invalidateQueries({ queryKey: inboxKeys.detail(conversationId) })
+    },
+  })
+}
+
+// ── POST /api/conversations/{id}/messages ─────────────────────────────────
+
+/**
+ * Envía un mensaje manual del operador en una conversación.
+ * Invalida el detalle para que el historial se refresque inmediatamente.
+ */
+export function useSendManualMessage() {
+  const qc = useQueryClient()
+
+  return useMutation<
+    SendManualMessageResponse,
+    Error,
+    { conversationId: string; body: SendManualMessageRequest }
+  >({
+    mutationFn: async ({ conversationId, body }) => {
+      const { data } = await api.post<SendManualMessageResponse>(
+        `/api/conversations/${conversationId}/messages`,
+        body
+      )
+      return data
+    },
+    onSuccess: (_data, { conversationId }) => {
+      // Refrescar el historial de mensajes del detalle
       qc.invalidateQueries({ queryKey: inboxKeys.detail(conversationId) })
     },
   })
