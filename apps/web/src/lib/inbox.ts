@@ -49,6 +49,14 @@ export interface InboxMessageItem {
   createdAt:    string          // ISO 8601
 }
 
+export interface StatusChangeItem {
+  timestamp:      string
+  previousStatus: string
+  newStatus:      string
+  note?:          string | null
+  actorId?:       string | null
+}
+
 export interface ConversationDetailResponse {
   conversationId: string
   patientName:    string
@@ -58,6 +66,7 @@ export interface ConversationDetailResponse {
   requiresHuman:  boolean
   createdAt:      string
   messages:       InboxMessageItem[]
+  statusHistory:  StatusChangeItem[]
 }
 
 // ── Mutation PATCH status ─────────────────────────────────────────────────
@@ -81,6 +90,7 @@ export interface PatchConversationStatusResponse {
   conversationId: string
   newStatus:      string
   previousStatus: string
+  note?:          string | null
   updatedAt:      string
 }
 

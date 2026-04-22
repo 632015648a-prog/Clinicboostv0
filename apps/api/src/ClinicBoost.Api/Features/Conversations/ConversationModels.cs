@@ -89,6 +89,17 @@ public sealed record ConversationDetailResponse
     public DateTimeOffset CreatedAt { get; init; }
 
     public IReadOnlyList<InboxMessageItem> Messages { get; init; } = [];
+    public IReadOnlyList<StatusChangeItem> StatusHistory { get; init; } = [];
+}
+
+/// <summary>Registro inmutable de un cambio de estado (leído de audit_logs).</summary>
+public sealed record StatusChangeItem
+{
+    public DateTimeOffset Timestamp      { get; init; }
+    public string         PreviousStatus { get; init; } = "";
+    public string         NewStatus      { get; init; } = "";
+    public string?        Note           { get; init; }
+    public Guid?          ActorId        { get; init; }
 }
 
 /// <summary>Un mensaje dentro del detalle de conversación.</summary>
@@ -134,6 +145,7 @@ public sealed record PatchConversationStatusResponse
     public Guid   ConversationId { get; init; }
     public string NewStatus      { get; init; } = "";
     public string PreviousStatus { get; init; } = "";
+    public string? Note          { get; init; }
     public DateTimeOffset UpdatedAt { get; init; }
 }
 

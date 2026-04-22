@@ -91,6 +91,9 @@ public static class ConversationEndpoints
         if (string.IsNullOrWhiteSpace(request.Status))
             return Results.BadRequest(new { error = "El campo 'status' es obligatorio." });
 
+        if (request.Note is { Length: > 500 })
+            return Results.BadRequest(new { error = "La nota no puede superar los 500 caracteres." });
+
         var tenantId = tenantCtx.RequireTenantId();
         var result   = await service.PatchStatusAsync(tenantId, id, request, ct);
 
