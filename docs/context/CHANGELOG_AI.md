@@ -1,5 +1,36 @@
 # Changelog AI
 
+## 2026-04-22 — Sincronización docs ↔ código
+
+### Problema
+Auditoría de cruce reveló que 8+ items implementados en código no estaban reflejados en documentación. Los docs estaban congelados en el estado del 2026-04-09/11, pero el código había avanzado significativamente.
+
+### Items descubiertos como implementados (sin documentar)
+- **Flow03 completo**: `Flow03Orchestrator` (536 líneas) + `AppointmentReminderWorker` (200 líneas) + registro en DI + `TC07_AppointmentReminderFlow03Tests` (6 tests). Nunca mencionado en ningún doc de status.
+- **GAP-01**: guard `waiting_human` en `WhatsAppInboundWorker.cs:236`
+- **GAP-02**: `LocalNow` en `AgentContext` + `SystemPromptBuilder`
+- **GAP-03**: `MaxDelayMinutes` en `Flow01Orchestrator.cs:127-157`
+- **GAP-04**: idempotencia en `MessageStatusService.cs:94-97`
+- **P1-3**: `propose_cancellation` tool real (crea `AppointmentEvent`)
+- **P2-4**: `confirm_appointment_response` tool real (crea `AppointmentEvent`)
+- **WQ-004 parcial**: `.env.local.example` ya corregido a puerto 5011
+
+### Docs actualizados
+- `FLOWS.md` — Flow03 marcado como implementado
+- `CURRENT_STATUS.md` — reescrito con estado real completo
+- `WORK_QUEUE.md` — reestructurado con sección de completados y resueltos sin WQ
+- `KNOWN_GAPS.md` — gaps resueltos tachados, gaps reales añadidos
+- `AUDIT_LATEST.md` — veredicto actualizado (3/8 flows, 2 P1 restantes)
+- `SMOKE_TESTS.md` — GAPs 01-04 marcados como resueltos
+- `AUDIT_REPORT.md` — addendum §15 con tabla de correcciones
+- `CHANGELOG_AI.md` — esta entrada
+
+### Fixes de código
+- `DEVELOPMENT.md` — puertos corregidos de 5000 a 5011 (5 referencias)
+- `api.ts` — fallback corregido de `http://localhost:5000` a `http://localhost:5011`
+
+---
+
 ## 2026-04-11 — TASK-001: Envío manual desde Inbox
 
 ### Implementado

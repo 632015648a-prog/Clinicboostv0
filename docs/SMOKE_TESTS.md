@@ -366,26 +366,13 @@ Estos aspectos requieren **revisión humana** en el entorno de staging antes de 
 
 ## 5. Piezas faltantes identificadas (GAPs)
 
+> **Nota (2026-04-22):** Los GAPs 01-04 han sido implementados en el código. Se mantiene la documentación original con anotaciones de resolución para trazabilidad.
+
 ### GAP-01 — Guard waiting_human en WhatsAppInboundWorker
 
 **Severidad:** 🔴 Alta  
 **TC que lo documenta:** TC-05-A, TC-05-B  
-**Descripción:** `WhatsAppInboundWorker` invoca al agente de IA aunque `conversation.Status == "waiting_human"`. Esto puede provocar respuestas automáticas no deseadas cuando un humano ya está atendiendo al paciente.
-
-**Implementación propuesta:**
-```csharp
-// En WhatsAppInboundWorker.ProcessAsync, antes de invocar al agente:
-if (conversation.Status == "waiting_human")
-{
-    _logger.LogInformation(
-        "[WhatsAppInboundWorker] Conversación en espera humana — omitiendo agente IA. " +
-        "ConvId={ConvId} TenantId={TenantId}", conversation.Id, tenantId);
-    await CompleteRunAsync(db, run, "skipped", "waiting_human", ct);
-    return;
-}
-```
-
-**Test de aceptación:** TC-05-A pasará sin la verificación `Should().BeTrue()` condicional.
+**Estado: ✅ RESUELTO** — Implementado en `WhatsAppInboundWorker.cs:236`. Guard explícito con `AutomationRun = "skipped"` y log informativo. El mensaje inbound se persiste siempre (paso 5) y el pipeline se detiene antes de invocar al agente IA.
 
 ---
 
@@ -393,87 +380,22 @@ if (conversation.Status == "waiting_human")
 
 **Severidad:** 🟡 Media  
 **TC que lo documenta:** TC-04-F  
-**Descripción:** `AgentContext` no incluye la hora local del tenant (`LocalNow`). El `SystemPromptBuilder` usa `DateTimeOffset.UtcNow` internamente pero no puede convertirla al timezone del tenant porque no tiene acceso al `TimeZone` en ese punto.
-
-**Impacto:** El agente no puede responder correctamente a preguntas como "¿Podéis atenderme ahora?" ya que no conoce la hora local de la clínica.
-
-**Implementación propuesta:**
-```csharp
-// 1. Añadir a AgentContext:
-public DateTimeOffset LocalNow { get; init; }
-
-// 2. En WhatsAppInboundWorker, al construir AgentContext:
-var tzInfo   = TZConvert.GetTimeZoneInfo(tenant.TimeZone);
-var localNow = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, tzInfo);
-var ctx = new AgentContext
-{
-    // ... otros campos ...
-    LocalNow = localNow,
-};
-
-// 3. En SystemPromptBuilder.Build():
-// Usar ctx.LocalNow para incluir la hora local en el system prompt.
-```
-
-**Test de aceptación:** TC-04-F añadir assertion `builtPrompt.Should().Contain(localNow.ToString("HH:mm"))`.
+**Estado: ✅ RESUELTO** — `AgentContext.LocalNow` (nullable `DateTimeOffset?`) añadido en `AgentModels.cs:150`. Calculado en `WhatsAppInboundWorker.cs:277-284` con `TZConvert.TryGetTimeZoneInfo`. Incluido en el system prompt por `SystemPromptBuilder.cs:58-63`.
 
 ---
 
-### GAP-03 — Falta CI integration para smoke tests automáticos
+### GAP-03a — Falta CI integration para smoke tests automáticos
 
 **Severidad:** 🟡 Media  
-**Descripción:** Los smoke tests no están integrados en el pipeline de CI/CD de GitHub Actions. Actualmente solo se pueden ejecutar manualmente con `make smoke-tests`.
-
-**Implementación propuesta:** Añadir un job `smoke-tests` en `.github/workflows/cd-staging.yml` que se ejecute después del deploy a staging:
-
-```yaml
-smoke-tests:
-  needs: deploy-staging
-  runs-on: ubuntu-latest
-  steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: '10.x'
-    - name: Run smoke tests
-      run: make smoke-tests
-      env:
-        ASPNETCORE_ENVIRONMENT: Test
-```
+**Estado: ⚠️ ABIERTO** — Los smoke tests siguen sin estar integrados en CI/CD. Solo ejecutables con `make smoke-tests`.
 
 ---
 
-### GAP-03 — Flow01Options.MaxDelayMinutes definido pero no implementado
+### GAP-03b — Flow01Options.MaxDelayMinutes definido pero no implementado
 
 **Severidad:** 🟡 Media  
 **TC que lo documenta:** TC-04-C  
-**Descripción:** `Flow01Options.MaxDelayMinutes` está definido con valor default=60 pero **no se lee en `ExecuteAsync`**. Las llamadas recibidas hace más tiempo del umbral se procesan igualmente en lugar de devolverse como `Skipped`.
-
-**Impacto:** En producción, si la cola de jobs tiene retrasos > 60 minutos, el sistema puede enviar WhatsApp recovery a pacientes cuya llamada es demasiado antigua, generando una experiencia de usuario degradada.
-
-**Implementación propuesta:**
-```csharp
-// En Flow01Orchestrator.ExecuteAsync, después del check de idempotencia:
-var delayCutoff = callReceivedAt.AddMinutes(_opts.MaxDelayMinutes);
-if (DateTimeOffset.UtcNow > delayCutoff)
-{
-    _logger.LogInformation(
-        "[Flow01] Llamada demasiado antigua. CallSid={CallSid} Age={Age}min MaxDelay={Max}min",
-        callSid, (DateTimeOffset.UtcNow - callReceivedAt).TotalMinutes, _opts.MaxDelayMinutes);
-
-    await _metrics.RecordAsync(new FlowMetricsEvent
-    {
-        TenantId   = tenantId, FlowId = "flow_01",
-        MetricType = "flow_skipped",
-        Metadata   = JsonSerializer.Serialize(new { reason = "max_delay_exceeded" }),
-    }, ct);
-
-    return Flow01Result.Skipped(
-        Guid.Empty, $"Llamada recibida hace más de {_opts.MaxDelayMinutes} min.");
-}
-```
-
-**Test de aceptación:** TC-04-C cambiar assertion a `result.FlowStep.Should().Be("skipped")`.
+**Estado: ✅ RESUELTO** — Implementado en `Flow01Orchestrator.cs:127-157`. Compara `elapsedSinceCall.TotalMinutes > _opts.MaxDelayMinutes`, registra métrica `max_delay_exceeded` y devuelve `Flow01Result.Skipped`.
 
 ---
 
@@ -481,9 +403,7 @@ if (DateTimeOffset.UtcNow > delayCutoff)
 
 **Severidad:** 🟡 Media  
 **TC que lo documenta:** TC-06-F (documenta implícitamente la ausencia)  
-**Descripción:** Si Twilio reenvía el mismo webhook de estado dos veces (retry por timeout), `MessageStatusService.ProcessAsync` insertará dos `MessageDeliveryEvent` con el mismo `{ProviderMessageId, Status}`. Esto puede inflar las métricas de delivery.
-
-**Implementación propuesta:** Añadir índice único `UNIQUE(tenant_id, provider_message_id, status)` en `message_delivery_events` con `INSERT OR IGNORE` / `ON CONFLICT DO NOTHING`.
+**Estado: ✅ RESUELTO** — `MessageStatusService.cs:94-97` usa `IIdempotencyService.TryProcessAsync` con clave `("twilio.status_webhook", "{MessageSid}_{MessageStatus}", tenantId)`. Re-entregas duplicadas se ignoran antes de insertar `MessageDeliveryEvent`.
 
 ---
 

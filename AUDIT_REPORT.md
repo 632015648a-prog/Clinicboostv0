@@ -544,3 +544,41 @@ supabase db diff --schema public
 ---
 
 *Informe generado por revisión automática de código fuente. Todos los hallazgos han sido verificados en los archivos fuente indicados. Los bugs P0 han sido corregidos en commits `42bffb5` y `4c33b7b`.*
+
+---
+
+## §15 · Addendum — Sincronización docs ↔ código (2026-04-22)
+
+> Este addendum corrige afirmaciones del informe original que ya no son ciertas en el código actual. El informe base (§1-§14) se preserva como snapshot histórico del commit `4c33b7b`.
+
+### Items resueltos desde el informe base
+
+| Referencia original | Afirmación del informe | Estado real (2026-04-22) |
+|---|---|---|
+| §3.2 P1-1 | "Sin envío manual de mensajes desde Inbox" | ✅ Implementado — TASK-001 (`POST /api/conversations/{id}/messages` + frontend + 7 tests) |
+| §3.2 P1-3 | "`propose_cancellation` tool es placeholder — devuelve `{ ok: true }` sin persistir" | ✅ Implementado — `ToolRegistry.cs:420-458` crea `AppointmentEvent(cancellation_requested)` y persiste en BD |
+| §3.2 P2-4 | "`confirm_appointment_response` tool es placeholder" | ✅ Implementado — `ToolRegistry.cs:460-500` crea `AppointmentEvent(patient_confirmed/patient_cancelled)` y persiste |
+| §6 flow_03 | "Etiqueta vacía — no hay clases de Orchestrator, Endpoints ni Workers" | ✅ Implementado — `Flow03Orchestrator` (536 líneas), `AppointmentReminderWorker` (200 líneas), registrado en DI, `TC07_AppointmentReminderFlow03Tests` (6 tests) |
+| §11 P1-4 | "`VITE_API_URL` en `.env.local.example` apunta a 5000" | ✅ Corregido — `.env.local.example` ahora apunta a `http://localhost:5011` |
+| SMOKE_TESTS GAP-01 | "Guard `waiting_human` no implementado en WhatsAppInboundWorker" | ✅ Implementado — `WhatsAppInboundWorker.cs:236` |
+| SMOKE_TESTS GAP-02 | "`AgentContext` no incluye `LocalNow`" | ✅ Implementado — `AgentModels.cs:150` + `WhatsAppInboundWorker.cs:277-314` + `SystemPromptBuilder.cs:58-63` |
+| SMOKE_TESTS GAP-03 | "`MaxDelayMinutes` definido pero no implementado" | ✅ Implementado — `Flow01Orchestrator.cs:127-157` |
+| SMOKE_TESTS GAP-04 | "MessageStatusService no tiene idempotencia" | ✅ Implementado — `MessageStatusService.cs:94-97` usa `IIdempotencyService` |
+
+### Items que siguen abiertos
+
+| Referencia original | Estado (2026-04-22) |
+|---|---|
+| §3.2 — `Note` en PATCH status no se persiste | ⚠️ Sigue abierto (WQ-002) |
+| §3.3 — `AgentTurn.MessageId = Guid.Empty` | ⚠️ Sigue abierto (WQ-003) |
+| §3.3 — Colas en memoria sin persistencia | ⚠️ Sigue abierto |
+| §3.3 — Sin rate-limiting en webhooks | ⚠️ Sigue abierto |
+| §4.2 — Sin notificaciones push / auto-refresh | ⚠️ Parcialmente resuelto (pending-handoff polling activo, inbox staleTime 30s) |
+| §5.3 — `DEVELOPMENT.md` puertos incorrectos | ⚠️ Parcialmente resuelto (`.env.local.example` corregido, `DEVELOPMENT.md` pendiente) |
+
+### Actualización del veredicto §13
+
+```
+Flujos activos: 3/8 (flow_00 + flow_01 + flow_03)   ← antes: 2/8
+Items P1 abiertos: 2  (WQ-002, WQ-003)               ← antes: 6
+```
