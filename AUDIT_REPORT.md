@@ -565,20 +565,30 @@ supabase db diff --schema public
 | SMOKE_TESTS GAP-03 | "`MaxDelayMinutes` definido pero no implementado" | ✅ Implementado — `Flow01Orchestrator.cs:127-157` |
 | SMOKE_TESTS GAP-04 | "MessageStatusService no tiene idempotencia" | ✅ Implementado — `MessageStatusService.cs:94-97` usa `IIdempotencyService` |
 
-### Items que siguen abiertos
+### Items resueltos en la implementación WQ (2026-04-22, segunda ronda)
 
-| Referencia original | Estado (2026-04-22) |
+| Referencia original | Estado final |
 |---|---|
-| §3.2 — `Note` en PATCH status no se persiste | ⚠️ Sigue abierto (WQ-002) |
-| §3.3 — `AgentTurn.MessageId = Guid.Empty` | ⚠️ Sigue abierto (WQ-003) |
-| §3.3 — Colas en memoria sin persistencia | ⚠️ Sigue abierto |
+| §3.2 — `Note` en PATCH status no se persiste | ✅ WQ-002: nota persistida en `audit_logs`, historial visible en detalle, 7 tests |
+| §3.3 — `AgentTurn.MessageId = Guid.Empty` | ✅ WQ-003: `MessageId` cambiado a `Guid?`, escribe NULL en vez de Guid.Empty |
+| §4.2 — Sin auto-refresh | ✅ WQ-005: `refetchInterval` 30s en Inbox, 60s en Dashboard summary |
+| §5.3 — `DEVELOPMENT.md` puertos incorrectos | ✅ WQ-004: todos los archivos corregidos a 5011 |
+| §6 — Flow03 sin validar en staging | ✅ WQ-007: bug corregido, config explícita, seed data, Makefile target |
+
+### Items que siguen abiertos (deuda técnica P2)
+
+| Referencia original | Estado |
+|---|---|
+| §3.3 — Colas en memoria sin persistencia | ⚠️ Sigue abierto (`Channel<T>` sin persistencia ante restart) |
 | §3.3 — Sin rate-limiting en webhooks | ⚠️ Sigue abierto |
-| §4.2 — Sin notificaciones push / auto-refresh | ⚠️ Parcialmente resuelto (pending-handoff polling activo, inbox staleTime 30s) |
-| §5.3 — `DEVELOPMENT.md` puertos incorrectos | ⚠️ Parcialmente resuelto (`.env.local.example` corregido, `DEVELOPMENT.md` pendiente) |
+| §3.2 — Sin expiración automática de conversaciones | ⚠️ `SessionExpiresAt` sin worker |
 
 ### Actualización del veredicto §13
 
 ```
-Flujos activos: 3/8 (flow_00 + flow_01 + flow_03)   ← antes: 2/8
-Items P1 abiertos: 2  (WQ-002, WQ-003)               ← antes: 6
+Flujos activos:     3/8 (flow_00 + flow_01 + flow_03)   ← antes: 2/8
+Items P1 abiertos:  0                                     ← antes: 6
+Work Queue:         7/7 completada (WQ-001 a WQ-007)
+Tests totales:      50+ archivos, 33 tests solo en Inbox
+Piloto asistido:    ✅ LISTO
 ```
