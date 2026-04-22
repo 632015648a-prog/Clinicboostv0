@@ -63,7 +63,7 @@ public sealed record VariantStats
 
     // ── Factory ───────────────────────────────────────────────────────────
     public static VariantStats Empty(Guid variantId, DateTimeOffset from, DateTimeOffset to)
-        => new() { VariantId = variantId, From = from, To = to };
+        => new() { From = from, To = to };
 }
 
 /// <summary>

@@ -50,9 +50,11 @@ public sealed class SessionInvalidationServiceTests
         var svc = CreateService(db);
         var jti = Guid.NewGuid().ToString();
         var exp = DateTimeOffset.UtcNow.AddHours(1);
+        var tenantId = Guid.NewGuid();
+        var userId   = Guid.NewGuid();
 
-        await svc.RevokeJtiAsync(Guid.NewGuid(), Guid.NewGuid(), jti, exp);
-        await svc.RevokeJtiAsync(Guid.NewGuid(), Guid.NewGuid(), jti, exp);
+        await svc.RevokeJtiAsync(tenantId, userId, jti, exp);
+        await svc.RevokeJtiAsync(tenantId, userId, jti, exp);
 
         db.SessionRevocations.Should().HaveCount(1, "duplicado debe ignorarse");
     }

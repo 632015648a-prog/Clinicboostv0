@@ -67,10 +67,8 @@ public sealed class RefreshTokenService : IRefreshTokenService
         string? ipAddress = null, string? userAgent = null)
     {
         var hash     = HashToken(plainToken);
-        // P0: buscar por hash + estado no-revocado; TenantId se valida post-lookup.
-        // El hash es criptográficamente seguro (SHA-256) y globalmente único.
         var existing = await _db.RefreshTokens.FirstOrDefaultAsync(
-            t => t.TokenHash == hash && !t.IsRevoked);
+            t => t.TokenHash == hash);
 
         if (existing is null)
             return new RotateTokenResult(false, Error: "not_found");
