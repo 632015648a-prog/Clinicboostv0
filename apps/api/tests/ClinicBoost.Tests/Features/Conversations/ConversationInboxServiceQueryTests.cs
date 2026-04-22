@@ -440,7 +440,7 @@ public sealed class ConversationInboxServiceQueryTests : IDisposable
         result.Count.Should().Be(2);
         result.Items.Should().HaveCount(2);
         result.Items[0].ConversationId.Should().Be(c1.Id, "oldest first");
-        result.Items[0].WaitingMinutes.Should().BeGreaterOrEqualTo(9);
+        result.Items[0].WaitingMinutes.Should().BeGreaterThanOrEqualTo(9);
     }
 
     [Fact]
