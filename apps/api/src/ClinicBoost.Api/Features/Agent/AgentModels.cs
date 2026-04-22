@@ -248,7 +248,7 @@ public sealed class AgentTurn
     public Guid   Id             { get; init; } = Guid.NewGuid();
     public Guid   TenantId       { get; init; }
     public Guid   ConversationId { get; init; }
-    public Guid   MessageId      { get; init; }  // FK → messages.id (el inbound)
+    public Guid?  MessageId      { get; init; }  // FK → messages.id (nullable: null si el inbound no está en los últimos N mensajes)
 
     // Clasificación
     public required string IntentName       { get; init; }

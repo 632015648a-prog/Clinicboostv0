@@ -412,7 +412,7 @@ public sealed class ConversationalAgent : IConversationalAgent
             {
                 TenantId         = ctx.TenantId,
                 ConversationId   = ctx.ConversationId,
-                MessageId        = matchedMsg?.Id ?? Guid.Empty,
+                MessageId        = matchedMsg?.Id,
                 IntentName       = result.Intent.Intent.ToString(),
                 IntentConfidence = result.Intent.Confidence,
                 ActionName       = result.Action.ToString(),
