@@ -7,10 +7,10 @@
 
 | Flow | Nombre | Estado |
 |------|--------|--------|
-| 00 | RGPD Onboarding | 🏗️ En construcción |
-| 01 | Llamadas Perdidas → WhatsApp → Cita | 🏗️ En construcción |
+| 00 | RGPD Onboarding | ✅ Operativo |
+| 01 | Llamadas Perdidas → WhatsApp → Cita | ✅ Operativo |
 | 02 | Gap Detection + Yield Management | 🏗️ En construcción |
-| 03 | Recordatorios + No-shows + Lista de espera | 🏗️ En construcción |
+| 03 | Recordatorios de cita | ✅ Operativo |
 | 04 | Leads fuera de horario | 🏗️ En construcción |
 | 05 | NPS + Referidos post-sesión | 🏗️ En construcción |
 | 06 | Reactivación de pacientes inactivos | 🏗️ En construcción |

@@ -32,6 +32,7 @@ VALUES
 ON CONFLICT (tenant_id, phone) DO NOTHING;
 
 -- Citas de ejemplo (en UTC)
+-- Cita mañana (Flow03 la detectará en la ventana de 24h)
 INSERT INTO appointments (tenant_id, patient_id, therapist_name, starts_at_utc, ends_at_utc, status, source, is_recovered)
 SELECT
   'a1b2c3d4-0000-0000-0000-000000000001',
@@ -46,4 +47,30 @@ FROM patients p
 WHERE p.tenant_id = 'a1b2c3d4-0000-0000-0000-000000000001'
   AND p.phone = '+34611111111'
 LIMIT 1
+ON CONFLICT DO NOTHING;
+
+-- Cita en 23h (Flow03 la detectará inmediatamente — dentro de la ventana de 24h)
+INSERT INTO appointments (tenant_id, patient_id, therapist_name, starts_at_utc, ends_at_utc, status, source, is_recovered)
+SELECT
+  'a1b2c3d4-0000-0000-0000-000000000001',
+  p.id,
+  'Dra. López',
+  NOW() + INTERVAL '23 hours',
+  NOW() + INTERVAL '23 hours' + INTERVAL '45 minutes',
+  1,     -- Scheduled
+  1,     -- Manual
+  FALSE
+FROM patients p
+WHERE p.tenant_id = 'a1b2c3d4-0000-0000-0000-000000000001'
+  AND p.phone = '+34622222222'
+LIMIT 1
+ON CONFLICT DO NOTHING;
+
+-- RuleConfig de ejemplo para Flow03 (configurable por tenant)
+INSERT INTO rule_configs (tenant_id, flow_id, rule_key, rule_value, value_type, description, is_active)
+VALUES
+  ('a1b2c3d4-0000-0000-0000-000000000001', 'flow_03', 'reminder_hours_before', '24', 'integer',
+   'Horas antes de la cita para enviar recordatorio', TRUE),
+  ('a1b2c3d4-0000-0000-0000-000000000001', 'flow_03', 'cooldown_minutes', '720', 'integer',
+   'Minutos de cooldown entre recordatorios al mismo paciente', TRUE)
 ON CONFLICT DO NOTHING;
