@@ -48,7 +48,8 @@ export function useInboxList(filters: InboxFilters) {
       })
       return data
     },
-    staleTime: 1000 * 30,   // 30 s — la inbox se refresca rápido
+    staleTime:       1000 * 30,
+    refetchInterval: 1000 * 30,
   })
 }
 
@@ -63,8 +64,9 @@ export function useConversationDetail(conversationId: string | null) {
       )
       return data
     },
-    enabled:   !!conversationId,
-    staleTime: 1000 * 30,
+    enabled:         !!conversationId,
+    staleTime:       1000 * 30,
+    refetchInterval: 1000 * 30,
   })
 }
 

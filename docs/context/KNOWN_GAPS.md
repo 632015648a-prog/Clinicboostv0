@@ -14,7 +14,7 @@
 - ~~`api.ts` fallback `http://localhost:5000`~~ → corregido a 5011
 - sin rate-limiting en webhooks Twilio
 - colas en memoria (`Channel<T>`) sin persistencia ante restart
-- sin `refetchInterval` en Inbox ni Dashboard (solo `staleTime`)
+- ~~sin `refetchInterval` en Inbox ni Dashboard~~ → WQ-005 completado (Inbox 30s, Dashboard 60s)
 - 0 tests para GetInbox, PatchStatus, GetDetail, GetPendingHandoff
 - Flow03 nunca validado en staging con citas reales
 

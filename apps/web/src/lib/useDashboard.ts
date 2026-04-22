@@ -42,7 +42,8 @@ export function useDashboardSummary(filters: DashboardFilters) {
       })
       return data
     },
-    staleTime: STALE_TIME,
+    staleTime:       STALE_TIME,
+    refetchInterval: 1000 * 60,
   })
 }
 

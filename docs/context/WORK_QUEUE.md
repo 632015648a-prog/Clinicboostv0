@@ -35,10 +35,12 @@ Ordenar siempre por impacto en piloto, no por apetito técnico.
 
 ### WQ-005 — Auto-refresh básico Inbox / Dashboard
 - Prioridad: Media
-- Bloquea piloto: Parcialmente
-- Estado: **Parcialmente implementado**
-- Lo resuelto: `usePendingHandoff` tiene polling activo (`refetchInterval` + `refetchIntervalInBackground`). `useInbox` tiene `staleTime: 30s`.
-- Lo pendiente: `useInbox` no tiene `refetchInterval` (no hace polling en background). `useDashboard` usa `staleTime: 2min` sin polling.
+- Estado: **✅ Completado** (2026-04-22)
+- `useInboxList`: `refetchInterval: 30s` (lista se actualiza sola)
+- `useConversationDetail`: `refetchInterval: 30s` (nuevos mensajes aparecen sin recargar)
+- `useDashboardSummary`: `refetchInterval: 60s` (badge waiting_human actualizado)
+- `usePendingHandoff`: ya tenía polling 30s (sin cambios)
+- Otros hooks de Dashboard (delivery, flows, revenue): sin polling (analytics, no operacional)
 
 ### WQ-006 — Tests mínimos de Conversations/Inbox
 - Prioridad: Media

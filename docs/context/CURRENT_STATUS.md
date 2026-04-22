@@ -62,7 +62,7 @@
 
 ### Media prioridad (mejora piloto)
 - ~~WQ-004~~: ✅ Completado — `.env.local.example`, `DEVELOPMENT.md` y `api.ts` apuntan a 5011.
-- WQ-005: auto-refresh Inbox (staleTime 30 s pero sin `refetchInterval`; Dashboard sin polling)
+- ~~WQ-005~~: ✅ Completado — Inbox list/detail polling 30s, Dashboard summary polling 60s
 - WQ-006: más tests de Conversations/Inbox (solo SendManualMessage cubierto, faltan Get/Patch/Detail)
 
 ## No implementado (fuera de alcance hasta cerrar piloto)
