@@ -23,7 +23,7 @@ import {
   usePatchConversationStatus,
   useSendManualMessage,
 } from '../lib/useInbox'
-import type { InboxFilters, ConversationStatus, PatchableStatus } from '../lib/inbox'
+import type { InboxFilters, ConversationStatus, PatchableStatus, StatusChangeItem } from '../lib/inbox'
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
 
@@ -331,6 +331,60 @@ function ActionPanel({ conversationId, currentStatus, onDone }: ActionPanelProps
   )
 }
 
+// ─── Historial de cambios de estado ───────────────────────────────────────────
+
+function StatusHistoryPanel({ items }: { items: StatusChangeItem[] }) {
+  const [expanded, setExpanded] = useState(false)
+
+  if (items.length === 0) return null
+
+  const visible = expanded ? items : items.slice(0, 3)
+  const hasMore = items.length > 3
+
+  return (
+    <div className="border-t border-gray-100 bg-white px-4 py-2">
+      <p className="text-[10px] font-medium text-gray-400 uppercase tracking-wide mb-1">
+        Historial de estado
+      </p>
+      <div className="space-y-1">
+        {visible.map((item, i) => (
+          <div key={i} className="flex items-start gap-2 text-[11px] text-gray-500">
+            <span className="text-gray-400 shrink-0">{fmtTime(item.timestamp)}</span>
+            <span>
+              <span className={`px-1 rounded ${statusCls(item.previousStatus)}`}>
+                {STATUS_LABELS[item.previousStatus] ?? item.previousStatus}
+              </span>
+              {' → '}
+              <span className={`px-1 rounded ${statusCls(item.newStatus)}`}>
+                {STATUS_LABELS[item.newStatus] ?? item.newStatus}
+              </span>
+              {item.note && (
+                <span className="ml-1 italic text-gray-600">— "{item.note}"</span>
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
+      {hasMore && !expanded && (
+        <button
+          onClick={() => setExpanded(true)}
+          className="text-[10px] text-indigo-500 hover:underline mt-1"
+        >
+          Ver historial completo ({items.length} cambios)
+        </button>
+      )}
+      {hasMore && expanded && (
+        <button
+          onClick={() => setExpanded(false)}
+          className="text-[10px] text-indigo-500 hover:underline mt-1"
+        >
+          Ocultar
+        </button>
+      )}
+    </div>
+  )
+}
+
 // ─── Panel de detalle de conversación ─────────────────────────────────────────
 
 interface DetailPanelProps {
@@ -451,6 +505,9 @@ function DetailPanel({ conversationId, onBack }: DetailPanelProps) {
           )
         })}
       </div>
+
+      {/* Historial de cambios de estado */}
+      <StatusHistoryPanel items={d.statusHistory ?? []} />
 
       {/* Panel de envío manual */}
       <SendMessagePanel

@@ -1,6 +1,7 @@
 using ClinicBoost.Api.Features.Conversations;
 using ClinicBoost.Api.Features.Flow01;
 using ClinicBoost.Api.Infrastructure.Database;
+using ClinicBoost.Api.Infrastructure.Tenants;
 using ClinicBoost.Domain.Conversations;
 using ClinicBoost.Domain.Patients;
 using ClinicBoost.Domain.Tenants;
@@ -90,9 +91,12 @@ public sealed class ConversationInboxServiceSendTests : IDisposable
     private ConversationInboxService BuildService(IOutboundMessageSender? sender = null)
     {
         sender ??= Substitute.For<IOutboundMessageSender>();
+        var tenantCtx = Substitute.For<ITenantContext>();
+        tenantCtx.UserId.Returns(Guid.NewGuid());
         return new ConversationInboxService(
             _db,
             sender,
+            tenantCtx,
             NullLogger<ConversationInboxService>.Instance);
     }
 

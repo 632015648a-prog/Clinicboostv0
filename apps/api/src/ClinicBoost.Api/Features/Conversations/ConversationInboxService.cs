@@ -1,5 +1,8 @@
+using System.Text.Json;
 using ClinicBoost.Api.Features.Flow01;
 using ClinicBoost.Api.Infrastructure.Database;
+using ClinicBoost.Api.Infrastructure.Tenants;
+using ClinicBoost.Domain.Common;
 using ClinicBoost.Domain.Conversations;
 using Microsoft.EntityFrameworkCore;
 
@@ -43,16 +46,19 @@ public sealed class ConversationInboxService : IConversationInboxService
 
     private readonly AppDbContext                         _db;
     private readonly IOutboundMessageSender               _sender;
+    private readonly ITenantContext                        _tenantCtx;
     private readonly ILogger<ConversationInboxService>   _logger;
 
     public ConversationInboxService(
         AppDbContext                       db,
         IOutboundMessageSender             sender,
+        ITenantContext                      tenantCtx,
         ILogger<ConversationInboxService>  logger)
     {
-        _db     = db;
-        _sender = sender;
-        _logger = logger;
+        _db        = db;
+        _sender    = sender;
+        _tenantCtx = tenantCtx;
+        _logger    = logger;
     }
 
     // ── GET /api/conversations ────────────────────────────────────────────
@@ -262,8 +268,46 @@ public sealed class ConversationInboxService : IConversationInboxService
             })
             .ToListAsync(ct);
 
-        // Volvemos a ordenar cronológicamente (ascendente) para el UI
         messages.Reverse();
+
+        // Cargar historial de cambios de estado desde audit_logs (AC-5, AC-10)
+        var auditLogs = await _db.AuditLogs
+            .AsNoTracking()
+            .Where(a =>
+                a.TenantId   == tenantId      &&
+                a.EntityType == "conversation" &&
+                a.EntityId   == conversationId &&
+                a.Action     == "status_changed")
+            .OrderByDescending(a => a.CreatedAt)
+            .Take(50)
+            .ToListAsync(ct);
+
+        var statusHistory = auditLogs.Select(a =>
+        {
+            string? prevStatus = null, newStatus = null, note = null;
+            if (a.OldValues is not null)
+            {
+                using var oldDoc = JsonDocument.Parse(a.OldValues);
+                if (oldDoc.RootElement.TryGetProperty("status", out var s))
+                    prevStatus = s.GetString();
+            }
+            if (a.NewValues is not null)
+            {
+                using var newDoc = JsonDocument.Parse(a.NewValues);
+                if (newDoc.RootElement.TryGetProperty("status", out var s))
+                    newStatus = s.GetString();
+                if (newDoc.RootElement.TryGetProperty("note", out var n) && n.ValueKind != JsonValueKind.Null)
+                    note = n.GetString();
+            }
+            return new StatusChangeItem
+            {
+                Timestamp      = a.CreatedAt,
+                PreviousStatus = prevStatus ?? "",
+                NewStatus      = newStatus  ?? "",
+                Note           = note,
+                ActorId        = a.ActorId,
+            };
+        }).ToList();
 
         return new ConversationDetailResponse
         {
@@ -275,6 +319,7 @@ public sealed class ConversationInboxService : IConversationInboxService
             RequiresHuman  = conv.Status == "waiting_human",
             CreatedAt      = conv.CreatedAt,
             Messages       = messages,
+            StatusHistory  = statusHistory,
         };
     }
 
@@ -313,13 +358,38 @@ public sealed class ConversationInboxService : IConversationInboxService
         conv.Status    = newStatus;
         conv.UpdatedAt = DateTimeOffset.UtcNow;
 
-        // Si se resuelve, marcamos ResolvedAt si existe la propiedad
         if (newStatus == "resolved" && conv is { } resolving)
         {
             resolving.ResolvedAt = DateTimeOffset.UtcNow;
         }
 
         await _db.SaveChangesAsync(ct);
+
+        // Normalizar nota: string vacío → null (AC-3)
+        var normalizedNote = string.IsNullOrWhiteSpace(request.Note) ? null : request.Note.Trim();
+
+        // Persistir audit log (best-effort: fallo no revierte el cambio de estado)
+        try
+        {
+            _db.AuditLogs.Add(new AuditLog
+            {
+                TenantId   = tenantId,
+                EntityType = "conversation",
+                EntityId   = conversationId,
+                Action     = "status_changed",
+                OldValues  = JsonSerializer.Serialize(new { status = previousStatus }),
+                NewValues  = JsonSerializer.Serialize(new { status = newStatus, note = normalizedNote }),
+                ActorId    = _tenantCtx.UserId,
+            });
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "[ConversationInboxService] Fallo al persistir audit log. " +
+                "ConvId={Id} {Prev} → {New} TenantId={TenantId}",
+                conversationId, previousStatus, newStatus, tenantId);
+        }
 
         _logger.LogInformation(
             "[ConversationInboxService] Estado actualizado: ConvId={Id} " +
@@ -331,6 +401,7 @@ public sealed class ConversationInboxService : IConversationInboxService
             ConversationId = conv.Id,
             NewStatus      = newStatus,
             PreviousStatus = previousStatus,
+            Note           = normalizedNote,
             UpdatedAt      = conv.UpdatedAt,
         };
     }

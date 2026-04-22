@@ -1,7 +1,7 @@
 # TASK-WQ002 — Persistir nota interna en cambio de estado de conversación
 
 ## 1. Estado
-**Draft** — pendiente de aprobación
+**Done** — implementado (2026-04-22)
 
 ## 2. Contexto
 El operador humano de la Inbox puede cambiar el estado de una conversación (`open`, `waiting_human`, `resolved`) mediante `PATCH /api/conversations/{id}/status`. El DTO `PatchConversationStatusRequest` ya tiene un campo `Note` (string opcional) y el frontend ya muestra un textarea "Nota interna (opcional)" en el `ActionPanel` de `InboxPage.tsx`.
@@ -190,4 +190,4 @@ Opción recomendada: extender `ConversationDetailResponse` con una lista de even
 | ¿La nota bloquea el cambio de estado si falla? | No — el cambio de estado es la acción primaria. Fallo de audit = warning en log. |
 
 ## 15. Decisión
-Pendiente de aprobación.
+**Aprobado e implementado** — 2026-04-22.
