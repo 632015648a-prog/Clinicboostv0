@@ -22,20 +22,19 @@ ClinicBoost tiene 3 flows operativos (00, 01, 03), inbox con envío manual, dash
 - 47 archivos de test, incluyendo 7 TCs de smoke E2E.
 
 ## Debilidades reales
-- WQ-002 (`Note` descartada) y WQ-003 (`Guid.Empty` en FK) siguen abiertos,
-- `DEVELOPMENT.md` documenta puertos incorrectos,
+- ~~WQ-002~~ y ~~WQ-003~~ resueltos (2026-04-22),
 - sin rate-limiting en webhooks,
 - colas en memoria sin persistencia,
 - sin auto-refresh activo en Inbox/Dashboard (solo staleTime),
 - Flow03 nunca validado en staging con citas reales.
 
 ## Prioridades reales
-### P1 inmediatas (bloquean piloto)
-- WQ-002: persistir `Note` en PATCH status
-- WQ-003: resolver `Guid.Empty` en `agent_turns.message_id`
+### P1 inmediatas — TODAS RESUELTAS
+- ✅ WQ-002: nota persistida en `audit_logs` (2026-04-22)
+- ✅ WQ-003: `AgentTurn.MessageId` nullable (2026-04-22)
+- ✅ WQ-004: puertos corregidos en todos los archivos
 
 ### P2 posteriores (mejoran piloto)
-- WQ-004: corregir puertos en `DEVELOPMENT.md` y fallback `api.ts`
 - WQ-005: añadir `refetchInterval` a Inbox y Dashboard
 - WQ-006: tests de GetInbox, PatchStatus, GetDetail
 - WQ-007: validar Flow03 en staging con citas reales
@@ -53,4 +52,4 @@ ClinicBoost tiene 3 flows operativos (00, 01, 03), inbox con envío manual, dash
 - ✅ Flow03 completo (orchestrator + worker + DI + 6 tests)
 
 ## Conclusión práctica
-El proyecto está más avanzado de lo que la documentación reflejaba. Solo quedan 2 items P1 para cerrar piloto (WQ-002 y WQ-003). No hace falta rediseñar — hace falta cerrar esos dos y validar Flow03 en staging.
+Todos los P1 están cerrados (WQ-001 a WQ-004). El proyecto está listo para piloto asistido. Lo que queda son mejoras P2: auto-refresh, más tests, validar Flow03 en staging, y reducir deuda técnica.

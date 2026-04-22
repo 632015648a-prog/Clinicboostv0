@@ -4,7 +4,7 @@
 ## Estado general
 - Demo local: ✅
 - Staging interno: ⚠️
-- Piloto asistido: ⚠️ (más cerca — WQ-001 cerrado, GAPs 01-04 cerrados, Flow03 implementado)
+- Piloto asistido: ✅ (todos los P1 cerrados: WQ-001 a WQ-004)
 - Producción: ❌
 
 ## Implementado y funcional
@@ -56,12 +56,12 @@
 
 ## Pendiente para cerrar piloto asistido
 
-### Alta prioridad (bloquea piloto)
-- WQ-002: persistencia del campo `Note` en PATCH status
-- WQ-003: revisar `agent_turns.message_id` (Guid.Empty en FK non-nullable)
+### Alta prioridad — RESUELTO
+- ~~WQ-002~~: ✅ Completado — nota persistida en `audit_logs`, historial visible en detalle
+- ~~WQ-003~~: ✅ Completado — `AgentTurn.MessageId` es `Guid?`, escribe NULL en vez de Guid.Empty
 
 ### Media prioridad (mejora piloto)
-- WQ-004: `DEVELOPMENT.md` sigue documentando puerto 5000 (real: 5011). `.env.local.example` ya corregido.
+- ~~WQ-004~~: ✅ Completado — `.env.local.example`, `DEVELOPMENT.md` y `api.ts` apuntan a 5011.
 - WQ-005: auto-refresh Inbox (staleTime 30 s pero sin `refetchInterval`; Dashboard sin polling)
 - WQ-006: más tests de Conversations/Inbox (solo SendManualMessage cubierto, faltan Get/Patch/Detail)
 
@@ -73,4 +73,4 @@
 - Expiración automática de conversaciones (`SessionExpiresAt` sin worker)
 
 ## Objetivo actual
-Cerrar WQ-002 y WQ-003 para tener piloto asistido listo.
+P1 cerrados. Siguiente: mejoras P2 (auto-refresh, tests, validar Flow03 en staging).

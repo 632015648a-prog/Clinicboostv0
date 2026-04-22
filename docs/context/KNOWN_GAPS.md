@@ -3,15 +3,15 @@
 
 ## Gaps funcionales
 - faltan Flows 02, 04-07
-- persistencia de `Note` en PATCH status pendiente (WQ-002)
+- ~~persistencia de `Note` en PATCH status~~ → WQ-002 completado
 - sin expiración automática de conversaciones (`SessionExpiresAt` sin worker)
 - sin envío de adjuntos desde Inbox
 - sin panel de configuración de `RuleConfig` (solo editable en BD)
 
 ## Gaps técnicos
-- `agent_turns.message_id` puede ser `Guid.Empty` en FK non-nullable (WQ-003)
-- `DEVELOPMENT.md` documenta puerto 5000 (real: 5011)
-- `api.ts` fallback `http://localhost:5000` (debería ser 5011)
+- ~~`agent_turns.message_id` Guid.Empty~~ → WQ-003 completado (nullable Guid?)
+- ~~`DEVELOPMENT.md` documenta puerto 5000~~ → corregido a 5011
+- ~~`api.ts` fallback `http://localhost:5000`~~ → corregido a 5011
 - sin rate-limiting en webhooks Twilio
 - colas en memoria (`Channel<T>`) sin persistencia ante restart
 - sin `refetchInterval` en Inbox ni Dashboard (solo `staleTime`)

@@ -14,24 +14,24 @@ Ordenar siempre por impacto en piloto, no por apetito técnico.
 
 ### WQ-002 — Persistencia de Note en conversación
 - Prioridad: Alta
-- Bloquea piloto: Sí
-- Estado: Pendiente de spec
-- Detalle: `PatchConversationStatusRequest.Note` se recibe pero se descarta en `PatchStatusAsync`. No hay columna en BD ni audit trail.
+- Estado: **✅ Completado** (2026-04-22)
+- Spec: `docs/specs/TASK-WQ002_PERSIST_STATUS_NOTE_SPEC.md`
+- Nota del operador se persiste en `audit_logs` como registro inmutable. Historial de cambios de estado visible en detalle de conversación. 7 tests (TC-NOTE-01 a TC-NOTE-07).
 
 ### WQ-003 — Revisar `agent_turns.message_id`
 - Prioridad: Alta
-- Bloquea piloto: Sí
-- Estado: Pendiente de spec
-- Detalle: `ConversationalAgent.cs:415` asigna `Guid.Empty` cuando no hay match. `AgentTurn.MessageId` es `Guid` non-nullable. Puede causar FK violation en Postgres.
+- Estado: **✅ Completado** (2026-04-22)
+- `AgentTurn.MessageId` cambiado de `Guid` a `Guid?`. `ConversationalAgent.PersistTurnAsync` usa `matchedMsg?.Id` (null) en vez de `Guid.Empty`. La columna SQL ya era nullable.
 
 ## Media prioridad (mejora piloto)
 
 ### WQ-004 — Validar `.env.local` / `VITE_API_URL`
-- Prioridad: Media (bajada de Alta)
-- Bloquea piloto: Parcialmente
-- Estado: **Parcialmente resuelto**
-- Lo resuelto: `.env.local.example` ya apunta a `http://localhost:5011` (correcto).
-- Lo pendiente: `docs/DEVELOPMENT.md` sigue documentando puerto 5000 en 5 referencias. `api.ts` tiene fallback `http://localhost:5000` (solo aplica si no hay variable de entorno).
+- Prioridad: Media
+- Bloquea piloto: No
+- Estado: **✅ Completado**
+- `.env.local.example`: `VITE_API_URL=http://localhost:5011` (correcto)
+- `docs/DEVELOPMENT.md`: 5 referencias corregidas a 5011
+- `apps/web/src/lib/api.ts`: fallback corregido a `http://localhost:5011`
 
 ### WQ-005 — Auto-refresh básico Inbox / Dashboard
 - Prioridad: Media
