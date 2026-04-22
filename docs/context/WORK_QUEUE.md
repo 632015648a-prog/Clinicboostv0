@@ -51,9 +51,13 @@ Ordenar siempre por impacto en piloto, no por apetito técnico.
 
 ### WQ-007 — Validar Flow 03 en staging
 - Prioridad: Media
-- Bloquea piloto: No
-- Estado: Pendiente
-- Detalle: Flow03 tiene orchestrator, worker, DI y 6 tests, pero nunca se ha probado con citas reales en staging.
+- Estado: **✅ Staging-ready** (2026-04-22)
+- Bug corregido: `AutomationRun.Status` siempre "completed" (ambas ramas iguales) → ahora "failed" si hay errores
+- Config: `Flow03Options` explícito en `appsettings.json` y `appsettings.Staging.json`
+- Seed: cita a 23h (dentro de ventana) + RuleConfigs flow_03 añadidos
+- Makefile: target `smoke-tests-tc07` añadido
+- README: Flow03 marcado como operativo
+- Pendiente: ejecución real en staging con Twilio configurado
 
 ## Resuelto en código (sin WQ formal previo)
 

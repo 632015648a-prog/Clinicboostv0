@@ -8,7 +8,7 @@
         staging-up staging-down staging-logs staging-ps staging-health \
         staging-migrate staging-build \
         smoke-tests smoke-tests-tc01 smoke-tests-tc02 smoke-tests-tc03 \
-        smoke-tests-tc04 smoke-tests-tc05 smoke-tests-tc06 smoke-tests-verbose
+        smoke-tests-tc04 smoke-tests-tc05 smoke-tests-tc06 smoke-tests-tc07 smoke-tests-verbose
 
 help: ## Muestra esta ayuda
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -125,6 +125,9 @@ smoke-tests-tc05: ## Smoke tests TC-05: conversation human-only
 
 smoke-tests-tc06: ## Smoke tests TC-06: webhook estado Twilio
 	TC=TC-06 bash infra/scripts/run-smoke-tests.sh
+
+smoke-tests-tc07: ## Smoke tests TC-07: Flow03 recordatorio de cita
+	TC=TC-07 bash infra/scripts/run-smoke-tests.sh
 
 smoke-tests-verbose: ## Smoke tests con output detallado (debug)
 	VERBOSE=1 bash infra/scripts/run-smoke-tests.sh

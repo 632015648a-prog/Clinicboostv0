@@ -16,7 +16,7 @@
 - colas en memoria (`Channel<T>`) sin persistencia ante restart
 - ~~sin `refetchInterval` en Inbox ni Dashboard~~ → WQ-005 completado (Inbox 30s, Dashboard 60s)
 - ~~0 tests para GetInbox, PatchStatus, GetDetail, GetPendingHandoff~~ → WQ-006 completado (19 tests)
-- Flow03 nunca validado en staging con citas reales
+- ~~Flow03 nunca validado en staging~~ → WQ-007: config/seed/bugfix listos, pendiente ejecución real
 
 ## Resuelto (quitar de checklists anteriores)
 - ~~envío manual pendiente~~ → TASK-001 completado

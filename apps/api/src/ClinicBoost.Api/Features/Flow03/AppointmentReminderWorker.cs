@@ -184,7 +184,7 @@ public sealed class AppointmentReminderWorker : BackgroundService
 
             if (run is not null)
             {
-                run.Status          = failed > 0 ? "completed" : "completed";
+                run.Status          = failed > 0 ? "failed" : "completed";
                 run.ItemsProcessed  = dueAppointments.Count;
                 run.ItemsSucceeded  = succeeded;
                 run.ItemsFailed     = failed;
