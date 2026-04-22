@@ -6,7 +6,7 @@ import axios from 'axios'
  * - baseURL se configura vía variable de entorno.
  */
 export const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL ?? 'http://localhost:5000',
+  baseURL: import.meta.env.VITE_API_URL ?? 'http://localhost:5011',
   withCredentials: true,       // ← cookies httpOnly
   headers: {
     'Content-Type': 'application/json',

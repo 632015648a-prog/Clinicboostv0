@@ -53,10 +53,10 @@ cp src/ClinicBoost.Api/appsettings.Development.json \
 dotnet build
 dotnet run --project src/ClinicBoost.Api
 
-# API disponible en: http://localhost:5000
-# Scalar UI:         http://localhost:5000/scalar
-# Health live:       http://localhost:5000/health/live
-# Health ready:      http://localhost:5000/health/ready
+# API disponible en: http://localhost:5011
+# Scalar UI:         http://localhost:5011/scalar
+# Health live:       http://localhost:5011/health/live
+# Health ready:      http://localhost:5011/health/ready
 ```
 
 ### 4. Frontend React
@@ -69,7 +69,7 @@ cp .env.local.example .env.local
 # Editar .env.local:
 #   VITE_SUPABASE_URL=http://localhost:54321
 #   VITE_SUPABASE_ANON_KEY=<anon key de supabase start>
-#   VITE_API_URL=http://localhost:5000
+#   VITE_API_URL=http://localhost:5011
 
 npm install
 npm run dev
