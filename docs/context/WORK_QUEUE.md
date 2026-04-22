@@ -44,10 +44,10 @@ Ordenar siempre por impacto en piloto, no por apetito técnico.
 
 ### WQ-006 — Tests mínimos de Conversations/Inbox
 - Prioridad: Media
-- Bloquea piloto: No, pero reduce riesgo
-- Estado: **Parcialmente completado**
-- Lo resuelto: 7 tests de SendManualMessage (`ConversationInboxServiceSendTests.cs`).
-- Lo pendiente: 0 tests para `GetInboxAsync`, `PatchStatusAsync`, `GetConversationDetailAsync`, `GetPendingHandoffAsync`.
+- Estado: **✅ Completado** (2026-04-22)
+- `ConversationInboxServiceSendTests.cs`: 7 tests (TC-SEND-01 a 07)
+- `ConversationInboxServiceNoteTests.cs`: 7 tests (TC-NOTE-01 a 07)
+- `ConversationInboxServiceQueryTests.cs`: 19 tests — GetInbox (8), GetDetail (4), PatchStatus (4), PendingHandoff (3)
 
 ### WQ-007 — Validar Flow 03 en staging
 - Prioridad: Media

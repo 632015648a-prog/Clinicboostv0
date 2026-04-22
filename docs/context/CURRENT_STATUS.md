@@ -63,7 +63,7 @@
 ### Media prioridad (mejora piloto)
 - ~~WQ-004~~: ✅ Completado — `.env.local.example`, `DEVELOPMENT.md` y `api.ts` apuntan a 5011.
 - ~~WQ-005~~: ✅ Completado — Inbox list/detail polling 30s, Dashboard summary polling 60s
-- WQ-006: más tests de Conversations/Inbox (solo SendManualMessage cubierto, faltan Get/Patch/Detail)
+- ~~WQ-006~~: ✅ Completado — 33 tests totales (Send 7 + Note 7 + Query 19)
 
 ## No implementado (fuera de alcance hasta cerrar piloto)
 - Flows 02, 04-07
