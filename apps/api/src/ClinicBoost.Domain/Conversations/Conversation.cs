@@ -66,7 +66,7 @@ public sealed class Message
 
     // Trazabilidad IA
     public bool GeneratedByAi { get; init; } = false;
-    public string? AiModel { get; init; }
+    public string? AiModel { get; set; }
     public int? AiPromptTokens { get; init; }
     public int? AiCompletionTokens { get; init; }
 
