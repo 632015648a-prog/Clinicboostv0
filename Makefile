@@ -3,7 +3,7 @@
 # Uso: make <target>
 # ============================================================
 
-.PHONY: help setup supabase-start supabase-stop db-reset api-run api-build api-test \
+.PHONY: help setup play supabase-start supabase-stop db-reset api-run api-build api-test \
         web-dev web-build lint dev \
         staging-up staging-down staging-logs staging-ps staging-health \
         staging-migrate staging-build \
@@ -24,6 +24,10 @@ setup: ## Primera configuración del proyecto
 	cd apps/api && dotnet restore
 	@echo ""
 	@echo "✅ Setup completado. Edita apps/web/.env.local con tus credenciales."
+
+# ─── One-shot local (Docker + supabase + API + Vite) ──────────────────────────
+play: ## Arrancar stack local: Supabase, migraciones, API y web (un solo proceso)
+	@bash scripts/dev-play.sh
 
 # ─── Supabase ─────────────────────────────────────────────────────────────────
 supabase-start: ## Arrancar Supabase en Docker
