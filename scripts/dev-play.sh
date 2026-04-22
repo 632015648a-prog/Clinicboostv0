@@ -5,6 +5,7 @@
 #   ./scripts/dev-play.sh
 #   ./scripts/dev-play.sh --db-reset     # migraciones + seed (borra datos locales)
 #   ./scripts/dev-play.sh --no-supabase  # Supabase ya levantado
+# En Windows (cmd, sin WSL): scripts\dev-play.cmd
 #
 # Ctrl+C detiene API y web (no hace `supabase stop`).
 

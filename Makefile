@@ -26,7 +26,7 @@ setup: ## Primera configuración del proyecto
 	@echo "✅ Setup completado. Edita apps/web/.env.local con tus credenciales."
 
 # ─── One-shot local (Docker + supabase + API + Vite) ──────────────────────────
-play: ## Arrancar stack local: Supabase, migraciones, API y web (un solo proceso)
+play: ## Linux/mac: Supabase + API + Vite (un proceso; ver scripts/dev-play.cmd en Windows)
 	@bash scripts/dev-play.sh
 
 # ─── Supabase ─────────────────────────────────────────────────────────────────
