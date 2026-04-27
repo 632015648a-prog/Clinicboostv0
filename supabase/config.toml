@@ -26,7 +26,13 @@ file_size_limit = "50MiB"
 
 [auth]
 site_url = "http://localhost:5173"
-additional_redirect_urls = ["http://localhost:5173/**"]
+additional_redirect_urls = [
+  "http://localhost:5173/**",
+  "http://localhost:5174/**",
+  "http://localhost:5175/**",
+  "http://127.0.0.1:5173/**",
+  "http://127.0.0.1:5175/**",
+]
 jwt_expiry = 3600
 enable_refresh_token_rotation = true     # OBLIGATORIO según spec ClinicBoost
 refresh_token_reuse_interval = 10
