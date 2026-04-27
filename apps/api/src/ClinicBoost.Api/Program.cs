@@ -134,6 +134,24 @@ try
     app.MapHealthEndpoints();
     app.MapFeatureEndpoints();
 
+    // Raíz (/) — evita 404 al abrir http://localhost:5011/ en el navegador
+    app.MapGet("/", () =>
+    {
+        const string scalarPath = "/scalar";
+        var body =
+            "<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"utf-8\"><title>ClinicBoost API</title></head><body>" +
+            "<h1>ClinicBoost API</h1>" +
+            "<p>La API no sirve contenido en la raíz; usa estos enlaces:</p>" +
+            "<ul>" +
+            "<li><a href=\"/health/live\"><code>GET /health/live</code></a> — comprueba que el proceso responde</li>" +
+            "<li><a href=\"/health/ready\"><code>GET /health/ready</code></a> — listo + base de datos</li>" +
+            "<li><a href=\"" + scalarPath + "\">Documentación interactiva (Scalar)</a> — en Development / Staging</li>" +
+            "</ul>" +
+            "<p><small>Frontend local: <code>http://localhost:5173</code> (u otro puerto que muestre Vite).</small></p>" +
+            "</body></html>";
+        return Results.Content(body, "text/html; charset=utf-8");
+    }).AllowAnonymous();
+
     await app.RunAsync();
 }
 catch (Exception ex) when (ex is not HostAbortedException)
