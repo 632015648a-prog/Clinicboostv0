@@ -39,15 +39,17 @@ supabase db reset   # aplica migraciones + seed automáticamente
 > - Studio: http://localhost:54323
 > - DB: postgresql://postgres:postgres@localhost:54322/postgres
 
+Tras `supabase start`, ejecuta **`supabase status`** y copia el **JWT Secret** (firma de los tokens de Auth). La API (.NET) debe usar **el mismo valor** en `Supabase:JwtSecret` (`appsettings.Development.Local.json` o variable `SUPABASE__JWTSECRET`). Si dejas solo el valor de ejemplo de `appsettings.Development.json`, las peticiones autenticadas fallarán con **401** aunque el usuario y `tenant_id` sean correctos.
+
 ### 3. Backend .NET
 
 ```bash
 cd apps/api
 
 # Variables de entorno (NO subir a git)
-cp src/ClinicBoost.Api/appsettings.Development.json \
+cp src/ClinicBoost.Api/appsettings.Development.Local.json.example \
    src/ClinicBoost.Api/appsettings.Development.Local.json
-# Editar appsettings.Development.Local.json con tus valores de Supabase local
+# Editar appsettings.Development.Local.json: como mínimo Supabase:JwtSecret = JWT Secret de `supabase status`
 
 # Compilar y arrancar
 dotnet build

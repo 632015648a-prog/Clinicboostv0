@@ -81,7 +81,8 @@ make setup
 
 # 2. Editar variables de entorno
 #    → apps/web/.env.local (VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, VITE_API_URL)
-#    → apps/api/src/ClinicBoost.Api/appsettings.Development.Local.json
+#    → apps/api/.../appsettings.Development.Local.json — Supabase:JwtSecret =
+#       el «JWT Secret» de `supabase status` (si no coincide → 401 en la API)
 
 # 3. Arrancar servicios (3 terminales)
 make supabase-start   # Terminal 1
