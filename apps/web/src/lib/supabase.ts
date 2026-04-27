@@ -12,8 +12,7 @@ if (!supabaseUrl || !supabaseAnon) {
 
 /**
  * Cliente Supabase compartido.
- * - NO guarda tokens en localStorage: usamos cookies httpOnly gestionadas por el backend.
- * - auth.persistSession = false porque la sesión la gestiona .NET via cookie.
+ * Sesión en memoria de la pestaña; api.ts adjunta el access_token a cada llamada a la API .NET.
  */
 export const supabase = createClient(supabaseUrl, supabaseAnon, {
   auth: {
