@@ -53,7 +53,7 @@ try
     // Orden importante: Database registra TenantContext + interceptor antes que Auth
     builder.Services.AddClinicBoostDatabase(builder.Configuration);
     builder.Services.AddClinicBoostAuth(builder.Configuration);
-    builder.Services.AddClinicBoostCors(builder.Configuration);
+    builder.Services.AddClinicBoostCors(builder.Configuration, builder.Environment);
     builder.Services.AddClinicBoostHealthChecks(builder.Configuration);
     builder.Services.AddClinicBoostResilience();
     builder.Services.AddAiResilience();

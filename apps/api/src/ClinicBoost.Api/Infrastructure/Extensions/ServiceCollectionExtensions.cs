@@ -134,18 +134,30 @@ public static class ServiceCollectionExtensions
     // CORS
     public static IServiceCollection AddClinicBoostCors(
         this IServiceCollection services,
-        IConfiguration config)
+        IConfiguration config,
+        IWebHostEnvironment env)
     {
         var origins = config.GetSection("Cors:AllowedOrigins").Get<string[]>()
                       ?? ["http://localhost:5173"];
 
         services.AddCors(opts =>
             opts.AddPolicy("ClinicBoostPolicy", p =>
-                p.WithOrigins(origins)
-                 .AllowAnyMethod()
+            {
+                p.AllowAnyMethod()
                  .AllowAnyHeader()
                  .AllowCredentials()
-                 .SetPreflightMaxAge(TimeSpan.FromMinutes(10))));
+                 .SetPreflightMaxAge(TimeSpan.FromMinutes(10));
+
+                if (env.IsDevelopment())
+                {
+                    p.SetIsOriginAllowed(origin =>
+                        new Uri(origin).Host is "localhost" or "127.0.0.1");
+                }
+                else
+                {
+                    p.WithOrigins(origins);
+                }
+            }));
 
         return services;
     }
