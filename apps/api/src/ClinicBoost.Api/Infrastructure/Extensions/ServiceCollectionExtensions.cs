@@ -1,3 +1,4 @@
+using ClinicBoost.Api.Infrastructure.Auth;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
@@ -21,7 +22,6 @@ using ClinicBoost.Api.Features.Variants;
 using ClinicBoost.Api.Features.Dashboard;
 using ClinicBoost.Api.Features.Conversations;
 using FluentValidation;
-using System.Text;
 
 namespace ClinicBoost.Api.Infrastructure.Extensions;
 
@@ -62,15 +62,21 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
-    // Auth JWT (Supabase GoTrue) + cookies httpOnly
+    // Auth JWT (Supabase GoTrue) + cookies httpOnly; HS256 (secret) o ES256/RS256 (JWKS)
     public static IServiceCollection AddClinicBoostAuth(
         this IServiceCollection services,
         IConfiguration config)
     {
-        var jwtSecret = config["Supabase:JwtSecret"]
+        _ = config["Supabase:JwtSecret"]
             ?? throw new InvalidOperationException(
                 "Supabase:JwtSecret no configurado. " +
                 "Usar variable de entorno SUPABASE__JWTSECRET en producción.");
+
+        services.AddMemoryCache();
+        services.AddHttpClient(SupabaseJwtKeyProvider.HttpClientName, c =>
+            c.Timeout = TimeSpan.FromSeconds(15));
+        services.AddSingleton<SupabaseJwtKeyProvider>();
+        services.AddSingleton<IPostConfigureOptions<JwtBearerOptions>, SupabaseJwtBearerPostConfigure>();
 
         services
             .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -79,8 +85,6 @@ public static class ServiceCollectionExtensions
                 opts.TokenValidationParameters = new TokenValidationParameters
                 {
                     ValidateIssuerSigningKey = true,
-                    IssuerSigningKey         = new SymmetricSecurityKey(
-                                                   Encoding.UTF8.GetBytes(jwtSecret)),
                     ValidateIssuer           = false,
                     ValidateAudience         = true,
                     ValidAudience            = "authenticated",
@@ -97,6 +101,17 @@ public static class ServiceCollectionExtensions
                             && !string.IsNullOrWhiteSpace(cookie))
                         {
                             ctx.Token = cookie;
+                        }
+                        else if (ctx.Request.Headers.TryGetValue("Authorization", out var authHeader))
+                        {
+                            // SPA (Supabase en memoria): el login no fija cookie en el origen de la API;
+                            // el front envía Bearer en cada petición.
+                            var value = authHeader.ToString();
+                            if (value.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                            {
+                                var token = value["Bearer ".Length..].Trim();
+                                if (token.Length > 0) ctx.Token = token;
+                            }
                         }
                         return Task.CompletedTask;
                     },

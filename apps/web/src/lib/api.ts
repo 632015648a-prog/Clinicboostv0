@@ -3,8 +3,9 @@ import { supabase } from './supabase'
 
 /**
  * Cliente HTTP para la API .NET (ClinicBoost.Api).
- * La API lee el JWT desde la cookie sb-access-token o desde Authorization Bearer.
- * Tras login con Supabase, hay que enviar Bearer en cada petición (no hay cookie sb-access-token desde el SPA).
+ * withCredentials: envía cookie httpOnly si existe.
+ * La API acepta JWT desde cookie sb-access-token o Authorization Bearer.
+ * Tras login con Supabase en el SPA, hay que enviar Bearer (la sesión suele estar solo en memoria).
  */
 export const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL ?? 'http://localhost:5011',
