@@ -50,6 +50,20 @@ public sealed class ClaimsExtractorTests
     }
 
     [Fact]
+    public void ExtractTenantId_Succeeds_WithAppMetadataJsonBlob_GoTrueStyle()
+    {
+        var tenantId = Guid.Parse("a1b2c3d4-0000-0000-0000-000000000001");
+        var json =
+            """{"provider":"email","tenant_id":"a1b2c3d4-0000-0000-0000-000000000001"}""";
+        var principal = BuildPrincipal(("app_metadata", json));
+
+        var result = _sut.ExtractTenantId(principal);
+
+        result.Success.Should().BeTrue();
+        result.Value.Should().Be(tenantId);
+    }
+
+    [Fact]
     public void ExtractTenantId_Fails_WhenClaimMissing()
     {
         var result = _sut.ExtractTenantId(EmptyPrincipal());
@@ -104,6 +118,18 @@ public sealed class ClaimsExtractorTests
 
         result.Success.Should().BeTrue();
         result.Value.Should().Be(role);
+    }
+
+    [Fact]
+    public void ExtractUserRole_Succeeds_WithAppMetadataJsonBlob_GoTrueStyle()
+    {
+        var json = """{"user_role":"admin","provider":"email"}""";
+        var principal = BuildPrincipal(("app_metadata", json));
+
+        var result = _sut.ExtractUserRole(principal);
+
+        result.Success.Should().BeTrue();
+        result.Value.Should().Be("admin");
     }
 
     [Fact]

@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.Json;
 
 namespace ClinicBoost.Api.Infrastructure.Tenants;
 
@@ -11,7 +12,7 @@ namespace ClinicBoost.Api.Infrastructure.Tenants;
 /// ORDEN DE BÚSQUEDA para cada claim:
 ///   1. Claim directo en el JWT (ej. "tenant_id")
 ///   2. Claim de app_metadata de Supabase (ej. "app_metadata.tenant_id")
-///   3. Claim en objeto anidado "app_metadata" como JSON (compatibilidad GoTrue)
+///   3. Propiedad dentro del claim JSON "app_metadata" (JWT de GoTrue / Supabase)
 /// </summary>
 public sealed class ClaimsExtractor
 {
@@ -42,7 +43,8 @@ public sealed class ClaimsExtractor
     /// </returns>
     public ExtractionResult<Guid> ExtractTenantId(ClaimsPrincipal principal)
     {
-        var raw = FindFirstValue(principal, TenantIdClaimNames);
+        var raw = FindFirstValue(principal, TenantIdClaimNames)
+                  ?? TryReadStringFromAppMetadataJson(principal, "tenant_id");
 
         // El claim no existe en absoluto → MissingTenantId (1001)
         if (raw is null)
@@ -65,7 +67,8 @@ public sealed class ClaimsExtractor
     /// </summary>
     public ExtractionResult<string?> ExtractUserRole(ClaimsPrincipal principal)
     {
-        var raw = FindFirstValue(principal, UserRoleClaimNames);
+        var raw = FindFirstValue(principal, UserRoleClaimNames)
+                  ?? TryReadStringFromAppMetadataJson(principal, "user_role");
 
         if (string.IsNullOrWhiteSpace(raw))
             return ExtractionResult<string?>.Ok(null);   // Ausencia no es error
@@ -113,6 +116,34 @@ public sealed class ClaimsExtractor
                 return value;
         }
         return null;
+    }
+
+    /// <summary>
+    /// GoTrue incluye <c>app_metadata</c> como un único claim cuyo valor es JSON.
+    /// No siempre se aplanan claves a <c>app_metadata.tenant_id</c> en el <see cref="ClaimsPrincipal"/>.
+    /// </summary>
+    private static string? TryReadStringFromAppMetadataJson(ClaimsPrincipal principal, string propertyName)
+    {
+        var json = principal.FindFirst("app_metadata")?.Value;
+        if (string.IsNullOrWhiteSpace(json)) return null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty(propertyName, out var prop))
+                return null;
+
+            return prop.ValueKind switch
+            {
+                JsonValueKind.String => prop.GetString(),
+                JsonValueKind.Null   => null,
+                _                    => prop.GetRawText().Trim('"'),
+            };
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 }
 
