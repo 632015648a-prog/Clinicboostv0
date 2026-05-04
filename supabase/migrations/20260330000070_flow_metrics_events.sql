@@ -10,7 +10,7 @@
 --   · metric_type enum permite filtrar por evento sin joins complejos.
 --   · duration_ms captura el tiempo entre pasos (respuesta, conversión).
 --   · recovered_revenue solo se rellena en appointment_booked.
---   · RLS habilitado: tenant_id filtra todas las queries.
+--   · RLS habilitado: tenant_id vía current_tenant_id() (JWT o GUC app.tenant_id).
 -- ─────────────────────────────────────────────────────────────────────────────
 
 -- ── Tabla principal ──────────────────────────────────────────────────────────
@@ -63,20 +63,16 @@ CREATE TABLE IF NOT EXISTS flow_metrics_events (
 
 -- ── Índices ──────────────────────────────────────────────────────────────────
 
--- Índice principal para queries de KPI (tenant + flow + tipo + rango de fechas)
 CREATE INDEX IF NOT EXISTS ix_flow_metrics_tenant_flow_type_date
     ON flow_metrics_events (tenant_id, flow_id, metric_type, occurred_at DESC);
 
--- Índice para trazabilidad end-to-end por correlación
 CREATE INDEX IF NOT EXISTS ix_flow_metrics_correlation
     ON flow_metrics_events (correlation_id);
 
--- Índice para tiempo de respuesta: consultar solo outbound_sent con duration_ms
 CREATE INDEX IF NOT EXISTS ix_flow_metrics_response_time
     ON flow_metrics_events (tenant_id, flow_id, occurred_at DESC)
     WHERE metric_type = 'outbound_sent' AND duration_ms IS NOT NULL;
 
--- Índice para revenue: consultar appointment_booked con recovered_revenue
 CREATE INDEX IF NOT EXISTS ix_flow_metrics_revenue
     ON flow_metrics_events (tenant_id, flow_id, occurred_at DESC)
     WHERE metric_type = 'appointment_booked' AND recovered_revenue IS NOT NULL;
@@ -85,13 +81,20 @@ CREATE INDEX IF NOT EXISTS ix_flow_metrics_revenue
 
 ALTER TABLE flow_metrics_events ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS flow_metrics_tenant_isolation ON flow_metrics_events;
+
 CREATE POLICY flow_metrics_tenant_isolation
-    ON flow_metrics_events
-    USING (tenant_id = current_setting('app.tenant_id', TRUE)::UUID);
+    ON flow_metrics_events FOR ALL
+    USING      (tenant_id = current_tenant_id())
+    WITH CHECK (tenant_id = current_tenant_id());
+
+-- ── Permisos (INSERT-only para app_user) ─────────────────────────────────────
+
+GRANT SELECT, INSERT ON flow_metrics_events TO app_user;
+REVOKE UPDATE, DELETE ON flow_metrics_events FROM app_user;
 
 -- ── Vistas de KPI ────────────────────────────────────────────────────────────
 
--- Vista: resumen diario por tenant y tipo de métrica
 CREATE OR REPLACE VIEW v_flow01_daily_kpi AS
 SELECT
     tenant_id,
@@ -102,7 +105,6 @@ SELECT
     COUNT(*) FILTER (WHERE metric_type = 'patient_replied')          AS patient_replies,
     COUNT(*) FILTER (WHERE metric_type = 'appointment_booked')       AS appointments_booked,
     COUNT(*) FILTER (WHERE metric_type = 'flow_skipped')             AS flow_skipped,
-    -- Tasa de conversión (outbound → reserva)
     CASE
         WHEN COUNT(*) FILTER (WHERE metric_type = 'outbound_sent') > 0
         THEN ROUND(
@@ -111,11 +113,9 @@ SELECT
         )
         ELSE 0
     END                                                              AS conversion_rate,
-    -- Tiempo de respuesta promedio (llamada → WA enviado)
     ROUND(AVG(duration_ms) FILTER (
         WHERE metric_type = 'outbound_sent' AND duration_ms IS NOT NULL
     ))                                                               AS avg_response_time_ms,
-    -- Revenue recuperado
     COALESCE(SUM(recovered_revenue) FILTER (
         WHERE metric_type = 'appointment_booked'
     ), 0)                                                            AS total_recovered_revenue
@@ -124,7 +124,6 @@ WHERE flow_id = 'flow_01'
 GROUP BY tenant_id, DATE_TRUNC('day', occurred_at)::DATE
 ORDER BY day DESC;
 
--- Vista: tiempo de respuesta p50/p95 por tenant (últimos 30 días)
 CREATE OR REPLACE VIEW v_flow01_response_time_percentiles AS
 SELECT
     tenant_id,
