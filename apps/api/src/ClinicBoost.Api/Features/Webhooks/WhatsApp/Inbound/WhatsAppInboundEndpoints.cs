@@ -185,7 +185,7 @@ public static class WhatsAppInboundEndpoints
             TenantId       = tenantId,
             Source         = "twilio",
             EventType      = "whatsapp_inbound",
-            Payload        = rawPayload,
+            Payload        = TwilioFormPayloadJson.FromForm(form),
             Headers        = sigHeader,
             Status         = "pending",
             IdempotencyKey = idemResult.ProcessedEventId?.ToString(),

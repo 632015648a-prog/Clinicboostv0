@@ -1,5 +1,19 @@
 # Changelog AI
 
+## 2026-05-06 — Postgres/EF, webhooks Twilio y KPI dashboard
+
+### Problemas resueltos (código ya en `main` / rama de trabajo)
+- **`tenants.whatsapp_number`**: convención EF generaba `whats_app_number` frente a DDL `whatsapp_number` → `42703`. Mapeo explícito `HasColumnName("whatsapp_number")`.
+- **`webhook_events.payload` como `jsonb`**: Twilio envía form urlencoded → `22P02` si se guardaba crudo → serialización JSON vía `TwilioFormPayloadJson.FromForm`.
+- **`conversations.ai_context` como `jsonb`**: `42804` (text vs jsonb) → bloque EF `Conversation` con `HasColumnType("jsonb")`.
+- **Revisión `jsonb`**: `processed_events.metadata` alineado a `jsonb`; `AuditLog` (`old_values`, `new_values`); `.IsRequired()` donde DDL `NOT NULL`; eliminado `ApplyConfigurationsFromAssembly` vacío (WARN en arranque).
+
+### Dashboard “+1 citas recuperadas”
+- Documentado como **comportamiento esperado con seed actual**, no regression de WhatsApp: `supabase/seed*.sql` inserta cita demo con **`is_recovered = TRUE`**; `DashboardService` cuenta por `created_at` en el rango. Detalle y mitigaciones: **`docs/context/POSTGRES_EF_TWILIO_GOTCHAS.md`**.
+- **`KNOWN_GAPS.md`**: entrada en gaps funcionales; **`DEVELOPMENT.md`**: enlace al doc.
+
+---
+
 ## 2026-04-22 — Sincronización docs ↔ código
 
 ### Problema

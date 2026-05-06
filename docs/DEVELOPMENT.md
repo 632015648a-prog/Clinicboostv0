@@ -41,6 +41,8 @@ supabase db reset   # aplica migraciones + seed automáticamente
 
 Tras `supabase start`, ejecuta **`supabase status`** y copia el **JWT Secret** (firma de los tokens de Auth). La API (.NET) debe usar **el mismo valor** en `Supabase:JwtSecret` (`appsettings.Development.Local.json` o variable `SUPABASE__JWTSECRET`). Si dejas solo el valor de ejemplo de `appsettings.Development.json`, las peticiones autenticadas fallarán con **401** aunque el usuario y `tenant_id` sean correctos.
 
+**Postgres + EF Core + webhooks Twilio:** errores típicicos (`42703`, `42804`, `22P02`), revisión de columnas `jsonb` y el KPI “citas recuperadas” vs datos de seed están documentados en [`docs/context/POSTGRES_EF_TWILIO_GOTCHAS.md`](context/POSTGRES_EF_TWILIO_GOTCHAS.md).
+
 ### 3. Backend .NET
 
 ```bash

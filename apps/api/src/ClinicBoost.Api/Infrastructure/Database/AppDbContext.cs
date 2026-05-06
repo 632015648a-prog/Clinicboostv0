@@ -81,9 +81,15 @@ public sealed class AppDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder model)
     {
-        // Todas las configuraciones de entidad se aplican automáticamente
-        // desde las clases IEntityTypeConfiguration<T> en este assembly
-        model.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
+        // El mapeo explícito está en ConfigureImmutableEntities (y el bloque Tenant).
+        // No hay IEntityTypeConfiguration en este ensamblado; ApplyConfigurationsFromAssembly
+        // solo generaba WARN en arranque.
+
+        model.Entity<Tenant>(e =>
+        {
+            // La convención snake_case parte "WhatsApp" -> whats_app_number; la DDL usa whatsapp_number.
+            e.Property(t => t.WhatsAppNumber).HasColumnName("whatsapp_number");
+        });
 
         // Entidades sin IEntityTypeConfiguration explícita reciben
         // configuración mínima aquí:
@@ -93,8 +99,8 @@ public sealed class AppDbContext : DbContext
     }
 
     /// <summary>
-    /// Configura entidades inmutables: desactiva los setters de updated_at
-    /// y previene UpdateRange / ExecuteUpdate sobre ellas a nivel EF.
+    /// Mapeo explícito a Postgres: columnas <c>jsonb</c>/<c>numeric</c>/etc. y nombres snake_case
+    /// donde la convención no basta (p. ej. <c>string</c> → debe declararse <c>jsonb</c>).
     /// </summary>
     private static void ConfigureImmutableEntities(ModelBuilder model)
     {
@@ -114,7 +120,7 @@ public sealed class AppDbContext : DbContext
              .HasMaxLength(64);
             e.Property(x => x.ProcessedAt).HasColumnName("processed_at");
             e.Property(x => x.Metadata).HasColumnName("metadata")
-             .HasColumnType("text");
+             .HasColumnType("jsonb");
 
             // Índice de rendimiento para consultas de deduplicación.
             // La constraint UNIQUE real con NULLS NOT DISTINCT está en Postgres
@@ -192,6 +198,28 @@ public sealed class AppDbContext : DbContext
             e.Property(x => x.CreatedAt).HasColumnName("created_at");
             // Variante A/B propagada al Message para correlación sin JOIN
             e.Property(x => x.MessageVariantId).HasColumnName("message_variant_id");
+        });
+
+        // Conversation — ai_context es jsonb en Postgres; sin esto EF envía text y falla 42804
+        model.Entity<Conversation>(e =>
+        {
+            e.ToTable("conversations");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
+            e.Property(x => x.PatientId).HasColumnName("patient_id").IsRequired();
+            e.Property(x => x.Channel).HasColumnName("channel").IsRequired();
+            e.Property(x => x.FlowId).HasColumnName("flow_id").IsRequired();
+            e.Property(x => x.Status).HasColumnName("status").IsRequired();
+            e.Property(x => x.AiContext).HasColumnName("ai_context")
+             .HasColumnType("jsonb").IsRequired();
+            e.Property(x => x.MessageCount).HasColumnName("message_count");
+            e.Property(x => x.LastMessageAt).HasColumnName("last_message_at");
+            e.Property(x => x.AppointmentId).HasColumnName("appointment_id");
+            e.Property(x => x.SessionExpiresAt).HasColumnName("session_expires_at");
+            e.Property(x => x.ResolvedAt).HasColumnName("resolved_at");
+            e.Property(x => x.CreatedAt).HasColumnName("created_at");
+            e.Property(x => x.UpdatedAt).HasColumnName("updated_at");
         });
 
         // RevenueEvent — inmutable
@@ -319,7 +347,7 @@ public sealed class AppDbContext : DbContext
             e.Property(x => x.TwilioMessageSid).HasColumnName("twilio_message_sid").HasMaxLength(64);
             e.Property(x => x.ErrorCode).HasColumnName("error_code").HasMaxLength(32);
             e.Property(x => x.CorrelationId).HasColumnName("correlation_id").IsRequired().HasMaxLength(128);
-            e.Property(x => x.Metadata).HasColumnName("metadata").HasColumnType("jsonb");
+            e.Property(x => x.Metadata).HasColumnName("metadata").HasColumnType("jsonb").IsRequired();
             e.Property(x => x.OccurredAt).HasColumnName("occurred_at");
 
             // Índice principal para queries de KPI por tenant+flow+tipo+fecha
@@ -397,7 +425,7 @@ public sealed class AppDbContext : DbContext
             e.Property(x => x.TemplateVars).HasColumnName("template_vars").HasColumnType("jsonb");
             e.Property(x => x.IsActive).HasColumnName("is_active");
             e.Property(x => x.WeightPct).HasColumnName("weight_pct");
-            e.Property(x => x.Metadata).HasColumnName("metadata").HasColumnType("jsonb");
+            e.Property(x => x.Metadata).HasColumnName("metadata").HasColumnType("jsonb").IsRequired();
             e.Property(x => x.CreatedAt).HasColumnName("created_at");
             e.Property(x => x.UpdatedAt).HasColumnName("updated_at");
 
@@ -427,7 +455,7 @@ public sealed class AppDbContext : DbContext
              .HasColumnType("numeric(10,2)");
             e.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3);
             e.Property(x => x.CorrelationId).HasColumnName("correlation_id").IsRequired();
-            e.Property(x => x.Metadata).HasColumnName("metadata").HasColumnType("jsonb");
+            e.Property(x => x.Metadata).HasColumnName("metadata").HasColumnType("jsonb").IsRequired();
             e.Property(x => x.OccurredAt).HasColumnName("occurred_at");
 
             e.HasIndex(x => new { x.TenantId, x.MessageVariantId, x.EventType })
@@ -484,6 +512,22 @@ public sealed class AppDbContext : DbContext
              .HasDatabaseName("uq_session_revocations_jti");
             e.HasIndex(x => x.JwtExpiresAt)
              .HasDatabaseName("ix_session_revocations_expires_at");
+        });
+
+        // ── Auditoría ──────────────────────────────────────────────────────────
+        model.Entity<AuditLog>(e =>
+        {
+            e.ToTable("audit_logs");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
+            e.Property(x => x.EntityType).HasColumnName("entity_type").IsRequired();
+            e.Property(x => x.EntityId).HasColumnName("entity_id").IsRequired();
+            e.Property(x => x.Action).HasColumnName("action").IsRequired();
+            e.Property(x => x.OldValues).HasColumnName("old_values").HasColumnType("jsonb");
+            e.Property(x => x.NewValues).HasColumnName("new_values").HasColumnType("jsonb");
+            e.Property(x => x.ActorId).HasColumnName("actor_id");
+            e.Property(x => x.CreatedAt).HasColumnName("created_at");
         });
     }
 }

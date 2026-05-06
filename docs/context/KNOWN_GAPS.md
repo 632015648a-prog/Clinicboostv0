@@ -1,7 +1,8 @@
 # Known Gaps — ClinicBoost
-> Última sincronización con código: 2026-04-22
+> Última sincronización con código: 2026-05-06
 
 ## Gaps funcionales
+- **KPI “Citas recuperadas” (dashboard)** puede mostrar **+1** tras `supabase db reset` sin flujo WhatsApp real: el seed inserta una cita demo con **`is_recovered = TRUE`** (Ana García) y el KPI usa `appointments.created_at` en el rango. Ver [`POSTGRES_EF_TWILIO_GOTCHAS.md`](POSTGRES_EF_TWILIO_GOTCHAS.md) §5.
 - faltan Flows 02, 04-07
 - ~~persistencia de `Note` en PATCH status~~ → WQ-002 completado
 - sin expiración automática de conversaciones (`SessionExpiresAt` sin worker)

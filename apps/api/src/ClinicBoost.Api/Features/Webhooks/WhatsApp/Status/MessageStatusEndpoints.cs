@@ -187,7 +187,7 @@ public static class MessageStatusEndpoints
             TenantId       = tenantId,
             Source         = "twilio",
             EventType      = "message_status",
-            Payload        = rawPayload,
+            Payload        = TwilioFormPayloadJson.FromForm(form),
             Headers        = sigHeader,
             Status         = "pending",
             IdempotencyKey = idemResult.ProcessedEventId?.ToString(),

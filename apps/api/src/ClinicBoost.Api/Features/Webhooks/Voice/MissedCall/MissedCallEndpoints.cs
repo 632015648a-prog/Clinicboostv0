@@ -187,7 +187,7 @@ public static class MissedCallEndpoints
             TenantId       = tenantId,
             Source         = "twilio",
             EventType      = "voice_inbound",
-            Payload        = rawPayload,
+            Payload        = TwilioFormPayloadJson.FromForm(form),
             Headers        = $"{{\"X-Twilio-Signature\":\"{twilioSig[..Math.Min(8, twilioSig.Length)]}…\"}}",
             Status         = "pending",
             IdempotencyKey = idemResult.ProcessedEventId?.ToString(),
