@@ -51,3 +51,8 @@ enabled = false
 
 [auth.external.github]
 enabled = false
+
+# Evita fallos de health check en Windows (Logflare/Analytics sin Docker tcp://2375).
+# Ver: CLI warning "Analytics on Windows requires Docker daemon exposed on tcp://localhost:2375"
+[analytics]
+enabled = false

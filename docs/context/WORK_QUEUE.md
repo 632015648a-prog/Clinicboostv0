@@ -1,5 +1,5 @@
 # Work Queue — prioridades actuales
-> Última sincronización con código: 2026-04-22
+> Última sincronización con código: 2026-05-07
 
 ## Regla general
 Ordenar siempre por impacto en piloto, no por apetito técnico.

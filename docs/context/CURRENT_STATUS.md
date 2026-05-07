@@ -1,5 +1,5 @@
 # Current Status — ClinicBoost
-> Última sincronización con código: 2026-04-22
+> Última sincronización con código: 2026-05-07
 
 ## Estado general
 - Demo local: ✅
@@ -25,6 +25,11 @@
   - Registrado en DI (`AddFlow03Feature`), arranca con la API como `HostedService`
   - TC-07: 6 tests (happy path, idempotencia, RGPD, ventana, cita pasada, config per-tenant)
   - Pendiente: validación en staging con citas reales
+
+### Validado en local (Twilio WhatsApp Sandbox)
+- **Recepción inbound end-to-end**: Twilio Sandbox → `POST /webhooks/twilio/whatsapp` (200) → `processed_events` + `webhook_events` → job encolado → creación de `patient`/`conversation`/`message`.
+- **Inbox operativo**: conversación visible y se pudo **contestar** desde Inbox; el paciente **recibió** el mensaje.
+- Nota: los “gotchas” resueltos de Postgres/EF/Twilio (nombres de columnas y `jsonb`) están en `docs/context/POSTGRES_EF_TWILIO_GOTCHAS.md`.
 
 ### Inbox operacional (MVP completo para piloto)
 - Lista paginada con filtros (estado, flujo, búsqueda)

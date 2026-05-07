@@ -4,6 +4,8 @@
 -- ============================================================
 
 -- Tenant de ejemplo
+-- whatsapp_number: en pruebas con Twilio WhatsApp Sandbox debe ser +14155238886 (E.164 del sandbox).
+-- Si usas un sender WA distinto, actualiza este valor o el registro en BD.
 INSERT INTO tenants (id, name, slug, time_zone, whatsapp_number, plan, is_active,
                      consent_accepted_at, consent_version)
 VALUES (
@@ -11,7 +13,7 @@ VALUES (
   'Fisioterapia Ramírez',
   'fisio-ramirez',
   'Europe/Madrid',
-  '+34600000001',
+  '+14155238886',
   1,  -- Starter
   TRUE,
   NOW(),
