@@ -197,15 +197,15 @@ public sealed class TwilioOutboundMessageSender : IOutboundMessageSender
         OutboundMessageRequest request,
         CancellationToken      ct)
     {
-        var activeStatuses = new[] { "open", "waiting_ai", "waiting_human" };
-
         var existing = await _db.Conversations
             .Where(c =>
                 c.TenantId  == request.TenantId  &&
                 c.PatientId == request.PatientId  &&
                 c.Channel   == request.Channel    &&
                 c.FlowId    == request.FlowId     &&
-                activeStatuses.Contains(c.Status))
+                (c.Status == "open" ||
+                 c.Status == "waiting_ai" ||
+                 c.Status == "waiting_human"))
             .OrderByDescending(c => c.UpdatedAt)
             .FirstOrDefaultAsync(ct);
 
