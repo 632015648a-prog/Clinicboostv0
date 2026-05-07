@@ -58,6 +58,29 @@ Convenciones del proyecto: **`EFCore.NamingConventions` (snake_case)** + columna
 
 ---
 
+## 6. Flow03 (recordatorios) — notas de pruebas y trampas
+
+### 6.1 `cooldown_minutes = 0` debe ser válido
+
+| | |
+|--|--|
+| **Síntoma** | Aunque `rule_configs.rule_value = '0'`, Flow03 seguía diciendo `CooldownMin=720` y saltaba el envío. |
+| **Causa** | Validación `m > 0` en el parser → el valor `0` caía al default 720. |
+| **Arreglo** | Aceptar `m >= 0` para que `0` signifique “sin cooldown”. |
+
+### 6.2 Reply inbound en conversación distinta (flow_00 vs flow_03)
+
+| | |
+|--|--|
+| **Síntoma** | El paciente responde “OK” al recordatorio Flow03, pero el dashboard lo muestra en otra conversación. |
+| **Causa** | Pipeline inbound forzaba `flow_00` al upsert de conversación; además el outbound no actualizaba `conversations.updated_at`, así que “la conversación reciente” podía ser otra. |
+| **Arreglo** | Inbound reutiliza la conversación activa más reciente del paciente (cualquier flow); outbound actualiza `conversations.updated_at/message_count` al crear un mensaje outbound. |
+
+### 6.3 Checklist de setup para prueba rápida
+- Ajustar `Flow03Options` en `appsettings.Development.Local.json` (no versionado): `PollIntervalMinutes=1` y `DefaultReminderHoursBeforeAppointment=0`.
+- Asegurar `patients.rgpd_consent = true`.
+- Insertar appointment de prueba a +3 min (`starts_at_utc = now() + interval '3 minutes'`).
+
 ## Referencias rápidas en código
 
 - `apps/api/src/ClinicBoost.Api/Infrastructure/Database/AppDbContext.cs` — mapeos explícitos.

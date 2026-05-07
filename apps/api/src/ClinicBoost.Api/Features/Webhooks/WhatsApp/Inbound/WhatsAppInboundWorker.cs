@@ -145,16 +145,30 @@ public sealed class WhatsAppInboundWorker : BackgroundService
             var patient = await ResolveOrCreatePatientAsync(
                 db, job.TenantId, job.CallerPhone, job.ProfileName, ct);
 
-            // ── 4. Upsert conversación activa ─────────────────────────────────
+            // ── 4. Resolver conversación activa (última) ─────────────────────
+            // No forzamos flow_00: si el paciente responde a un outbound reciente
+            // (p.ej. recordatorio flow_03), queremos que caiga en ESA conversación.
+            var activeConversation = await db.Conversations
+                .Where(c =>
+                    c.TenantId  == job.TenantId  &&
+                    c.PatientId == patient.Id    &&
+                    c.Channel   == "whatsapp"    &&
+                    (c.Status == "open" ||
+                     c.Status == "waiting_ai" ||
+                     c.Status == "waiting_human"))
+                .OrderByDescending(c => c.UpdatedAt)
+                .FirstOrDefaultAsync(ct);
+
+            // ── 5. Upsert conversación activa ─────────────────────────────────
             var conversationService = sp.GetRequiredService<IConversationService>();
-            var conversation = await conversationService.UpsertConversationAsync(
+            var conversation = activeConversation ?? await conversationService.UpsertConversationAsync(
                 tenantId:  job.TenantId,
                 patientId: patient.Id,
                 channel:   "whatsapp",
                 flowId:    "flow_00",
                 ct:        ct);
 
-            // ── 5. Persistir mensaje inbound con MessageSid ───────────────────
+            // ── 6. Persistir mensaje inbound con MessageSid ───────────────────
             // Correlación garantizada: MessageSid → Message.Id → Conversation.Id → TenantId
             var message = await conversationService.AppendInboundMessageAsync(
                 conversationId: conversation.Id,

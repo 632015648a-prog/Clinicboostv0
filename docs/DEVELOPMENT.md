@@ -63,6 +63,21 @@ dotnet run --project src/ClinicBoost.Api
 # Health ready:      http://localhost:5011/health/ready
 ```
 
+### 3.1 Prueba rápida: Flow03 (recordatorio cita) en local
+
+- **Objetivo**: disparar Flow03 en minutos y validar que el reply del paciente queda en la misma conversación (`flow_03`).
+- **Configuración** (en `appsettings.Development.Local.json`, NO versionado):
+  - `Flow03Options.PollIntervalMinutes = 1`
+  - `Flow03Options.DefaultReminderHoursBeforeAppointment = 0`
+- **Datos**:
+  - el paciente debe tener `rgpd_consent = true` (si no, se hará “skip”).
+  - crear una cita para dentro de 3 minutos.
+- **Cooldown**:
+  - durante pruebas, `rule_configs(flow_03, cooldown_minutes)` puede ponerse a `0` (regla activa) para permitir repetir recordatorios.
+- **Verificación**:
+  - en BD: `messages` outbound con `provider_message_id` (TwilioSid) y `status=sent/delivered`.
+  - en BD: inbound reply “OK” debe caer en `conversations.flow_id = 'flow_03'` (no en `flow_00`).
+
 ### 4. Frontend React
 
 ```bash

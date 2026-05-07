@@ -384,7 +384,7 @@ public sealed class Flow03Orchestrator
             && int.TryParse(rule.RuleValue,
                    System.Globalization.NumberStyles.Integer,
                    System.Globalization.CultureInfo.InvariantCulture, out var m)
-            && m > 0 ? m : 720;
+            && m >= 0 ? m : 720;
     }
 
     /// <summary>

@@ -116,6 +116,18 @@ public sealed class TwilioOutboundMessageSender : IOutboundMessageSender
             MessageVariantId   = request.MessageVariantId,
         };
         _db.Messages.Add(message);
+        var now = DateTimeOffset.UtcNow;
+
+        // Marcar la conversación como "reciente" para el dashboard y para el enrutado inbound.
+        // Si no actualizamos la conversación, un reply puede engancharse a una conversación
+        // antigua simplemente porque su UpdatedAt quedó más reciente por inbound previo.
+        var conv = await _db.Conversations.FindAsync([conversationId], ct);
+        if (conv is not null)
+        {
+            conv.MessageCount += 1;
+            conv.UpdatedAt     = now;
+        }
+
         await _db.SaveChangesAsync(ct);
 
         _logger.LogDebug(
@@ -130,7 +142,7 @@ public sealed class TwilioOutboundMessageSender : IOutboundMessageSender
             // ── 4. Actualizar a sent ──────────────────────────────────────────
             message.Status             = "sent";
             message.ProviderMessageId  = twilioSid;
-            message.SentAt             = DateTimeOffset.UtcNow;
+            message.SentAt             = now;
             await _db.SaveChangesAsync(ct);
 
             _logger.LogInformation(

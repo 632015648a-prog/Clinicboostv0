@@ -14,6 +14,24 @@
 
 ---
 
+## 2026-05-07 — Flow03 validado end-to-end + fixes enrutado conversación
+
+### Estado actual de pruebas (local)
+- **Flow03 OK end-to-end**: worker detecta citas en ventana, envía WhatsApp por Twilio y se persisten `messages` + `message_delivery_events` + `webhook_events` de status (`sent`→`delivered`).
+- **Reply del paciente (“OK”)**: tras los fixes, el inbound queda en la **misma conversación** del recordatorio (`conversations.flow_id = 'flow_03'`), evitando duplicar conversaciones en dashboard.
+
+### Bugs encontrados y arreglados
+- **`cooldown_minutes = 0` no funcionaba**: el parser exigía `m > 0` y caía al default 720 min → ahora acepta `m >= 0`.
+- **Split de conversación (flow_03 outbound vs inbound)**:
+  - Causa: el inbound pipeline forzaba `flow_00` siempre; y el outbound no marcaba la conversación como “reciente”.
+  - Arreglo: el inbound reutiliza la **conversación activa más reciente** (cualquier flow) y el sender outbound actualiza `conversations.updated_at/message_count`.
+
+### Ajustes usados para pruebas rápidas (para dejar constancia)
+- **`appsettings.Development.Local.json`** (no versionado): `Flow03Options.PollIntervalMinutes = 1` y `Flow03Options.DefaultReminderHoursBeforeAppointment = 0`.
+- **RGPD**: el paciente debe tener `patients.rgpd_consent = true` (si no, se hace “skip”).
+- **Cita de prueba**: insertar appointment con `starts_at_utc = now() + interval '3 minutes'` y `status = 1`.
+- **RuleConfig**: para repetir recordatorios durante pruebas, `rule_configs(flow_03, cooldown_minutes)` debe poder ser `0` y estar activo para que se lea.
+
 ## 2026-04-22 — Sincronización docs ↔ código
 
 ### Problema
